@@ -6,15 +6,29 @@ installed.
 
 ![The browser showing the docstring of sort!](https://raw.githubusercontent.com/JuliaLang/DocBrowser.jl/main/docs/src/assets/browser.png)
 
-## Opening it
+## Getting started
 
-| To open it | Do this |
-|:-----------|:--------|
-| at the start page | press Enter at an empty `help?>` prompt |
-| at a name | type the name at `help?>`, then press Alt-Enter |
-| at a manual page | type `docs:` and the place at `help?>`, e.g. `docs: manual/variables` |
+```
+pkg> add DocBrowser
 
-It opens again where you left it.
+julia> using DocBrowser
+
+help?>                          # press Enter at the empty prompt to open the browser
+
+help?> sum                      # or type a name and press Alt-Enter to open it there
+
+help?> docs: manual/variables   # or go straight to a manual page
+```
+
+Press `?` in the browser to see every key, and `q` to close it. It opens again where you left
+it.
+
+To have help mode open the browser in every session, add this line to
+`~/.julia/config/startup.jl`:
+
+```julia
+isinteractive() && @eval using DocBrowser
+```
 
 ## What you see
 
