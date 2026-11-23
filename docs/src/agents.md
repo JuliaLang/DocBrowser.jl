@@ -7,7 +7,7 @@ versions your project uses, offline.
 ## 1. Install it
 
 ```
-pkg> app add https://github.com/JuliaLang/DocBrowser.jl
+pkg> app add DocBrowser
 ```
 
 This uses Pkg's (experimental) apps, and puts `jldocs` in `~/.julia/bin`, which needs to be

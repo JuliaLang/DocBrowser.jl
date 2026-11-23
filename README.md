@@ -6,15 +6,22 @@
 
 A full-window browser in the REPL for Julia's manual, the manuals of your packages, and the
 docstrings of every loaded module.
-Press Enter at an empty `help?>` prompt to open it.
 
-## Installation
+## Getting started
 
-```julia
+```
 pkg> add DocBrowser
+
+julia> using DocBrowser
+
+help?>            # press Enter at the empty prompt to open the browser
+
+help?> sum        # or type a name and press Alt-Enter to open it there
 ```
 
-Then load it in `~/.julia/config/startup.jl`, so that help mode opens the browser in every session:
+Press `?` in the browser to see every key, and `q` to close it.
+
+To have help mode open the browser in every session, load it in `~/.julia/config/startup.jl`:
 
 ```julia
 isinteractive() && @eval using DocBrowser
@@ -27,9 +34,8 @@ and later are supported.
 
 ## Using it
 
-- Enter at an empty `help?>` prompt opens the browser where it was last closed.
-- Type a name and press Alt-Enter to open it at that name.
-- `DocBrowser.browse()` and `DocBrowser.browse(x)` open it from code.
+The browser opens again where it was last closed. `DocBrowser.browse()` and
+`DocBrowser.browse(x)` open it from code.
 
 The browser has three panes:
 
@@ -127,7 +133,7 @@ the `jldocs` command with Pkg's (experimental) app support, and put `~/.julia/bi
 `PATH`:
 
 ```
-pkg> app add https://github.com/JuliaLang/DocBrowser.jl
+pkg> app add DocBrowser
 ```
 
 ```
