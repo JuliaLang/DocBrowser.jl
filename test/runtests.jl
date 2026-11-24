@@ -359,9 +359,18 @@ end
             path = "$(replace(joinpath(dir, link), '\\' => '/'))"
             """)
         old = Base.active_project()
-        Base.set_active_project(joinpath(env, "Project.toml"))
         pushfirst!(DEPOT_PATH, joinpath(dir, "depot"))
         try
+            # A package that is the active project, as when working on it, is listed as the
+            # project, and its manual is searched before it is loaded.
+            Base.set_active_project(joinpath(dir, link, "Project.toml"))
+            b = Browser(fake_terminal(""))
+            lid = Base.PkgId(linkuuid, link)
+            @test lid in b.cat.unloaded
+            @test only(r for r in b.side_rows if r.unloaded == lid).role === :project
+            @test any(r -> r[1] == "$link/index", DocBrowser.search_package_manuals(b, link))
+            @test occursin("$link is the active project", join(String.(DocBrowser.page(b, DocBrowser.LoadTarget(lid), 80).lines), '\n'))
+            Base.set_active_project(joinpath(env, "Project.toml"))
             b = Browser(fake_terminal(""))
             id = Base.PkgId(uuid, name)
             @test id in b.cat.unloaded
