@@ -105,6 +105,7 @@ to know why, `DocBrowser.explain_docs("Name")` says where the browser looked.
 | Environment variable | Effect |
 |:---------------------|:-------|
 | `JULIA_DOCBROWSER_AUTODOWNLOAD=no` | don't download missing package manuals in the background |
+| `JULIA_DOCBROWSER_IMAGES=no` | don't draw pictures, such as the Julia logo, in terminals with the kitty graphics protocol |
 | `JULIA_DOCBROWSER_SEARCH_URL` | the web search for packages with no known repository, with `%s` for the query (default DuckDuckGo) |
 | `JULIA_EDITOR` | the editor that `e` opens |
 

@@ -121,7 +121,7 @@ Base.peek(s::SlowInput, ::Type{UInt8}) = (eof(s) && throw(EOFError()); peek(s.bu
     @test ev("\e]11;rgb:0000/0000/0000\e\\") == DocBrowser.SchemeEvent(nothing, "rgb:0000/0000/0000")
     @test ev("\e]10;rgb:ffff/ffff/ffff\a") === nothing
     @test ev("\e[?997;1n") == DocBrowser.SchemeEvent(true, "")
-    @test ev("\e[?62;22c") === nothing
+    @test ev("\e[?62;22c") == DocBrowser.AnsweredEvent()
     # A mouse report in the X10 encoding is read whole, and its bytes are not keys.
     io = IOBuffer("\e[M #!q")
     @test read_event(io) == DocBrowser.LegacyMouseEvent() && read_event(io) == KeyEvent('q')
@@ -2064,6 +2064,79 @@ end
     # The shades are mixed from the background the terminal reported.
     faces = Dict(DocBrowser.theme_faces(:dark, UInt32(0x101010)))
     @test faces[:REPL_DocBrowser_bar] == StyledStrings.Face(background=StyledStrings.SimpleColor(0x1c1c1c))
+end
+
+@testset "pictures" begin
+    # What a terminal says about its pictures and its cells.
+    @test read_event(IOBuffer("\e_Gi=31;OK\e\\")) == DocBrowser.GraphicsEvent(31, true)
+    @test read_event(IOBuffer("\e_Gi=7,p=1;ENOENT:gone\e\\")) == DocBrowser.GraphicsEvent(7, false)
+    @test read_event(IOBuffer("\e[6;15;7t")) == DocBrowser.CellSizeEvent(15, 7)
+    # The logo is sized for the terminal's cells, clear at its corners and opaque inside a dot.
+    logo = DocBrowser.logo_picture((15, 7))
+    pixels = DocBrowser.logo_pixels(logo)
+    @test (logo.width, logo.height) == (126, 120) && length(pixels) == 4 * 126 * 120
+    @test pixels[4] == 0x00 && pixels[4*(30*126+63) .+ (1:4)] == [0x38, 0x98, 0x26, 0xff]
+    # The browser asks whether the terminal draws pictures, and draws the dots until it says so.
+    b = DocBrowser.opening(fake_terminal(""; rows=16))
+    written() = String(take!(b.out.io))
+    start() = join(String.(DocBrowser.page(b, :start, DocBrowser.doc_width(b)).lines), '\n')
+    header() = strip_ansi(frame(b)[1])
+    @test written() == DocBrowser.GRAPHICS_QUERY && !b.answered
+    @test occursin("● ●", start()) && occursin("●●●", header())
+    handle!(b, DocBrowser.CellSizeEvent(15, 7))
+    @test handle!(b, DocBrowser.GraphicsEvent(DocBrowser.GRAPHICS_QUERY_ID, true))
+    mark = DocBrowser.mark_picture(b.cell)
+    @test occursin("a=t,f=32,i=$(logo.id),s=126,v=120,m=1;", written()) && b.awaited == [logo, mark]
+    handle!(b, DocBrowser.AnsweredEvent())
+    @test b.answered
+    # The terminal reads the pictures before the next frame, which draws them without waiting.
+    @test !occursin("● ●", start()) && !occursin("●●●", header())
+    @test [p.picture for p in b.placements] == [logo, mark]
+    # If it does not answer for them in time, the dots are back, until it does.
+    b.sent -= 2 * DocBrowser.PICTURE_WAIT
+    @test occursin("●●●", header()) && occursin("● ●", start()) && isempty(b.placements)
+    @test handle!(b, DocBrowser.GraphicsEvent(logo.id, true)) && b.awaited == [mark]
+    frame(b)
+    @test [p.picture for p in b.placements] == [logo]
+    # iTerm2 leaves the picture's number out of its answer, which is then for the next one.
+    @test handle!(b, DocBrowser.GraphicsEvent(0, true)) && isempty(b.awaited)
+    @test !handle!(b, DocBrowser.GraphicsEvent(0, true))
+    # Each picture is placed over the cells left blank for it, and only when something changes.
+    DocBrowser.draw(b)
+    out = written()
+    @test occursin("\e[1;2H\e_Ga=p,q=1,C=1,i=$(mark.id),", out)
+    @test occursin("i=$(logo.id),p=1,c=9,r=4,y=0,h=120\e\\", out)
+    DocBrowser.draw(b)
+    @test !occursin("\e_G", written())
+    # Scrolled part of the way out, it shows the rows still in view.
+    b.doc_scroll = 3
+    DocBrowser.draw(b)
+    @test occursin("i=$(logo.id),p=1,c=9,r=2,y=60,h=60\e\\", written())
+    # Under a card it is not drawn.
+    b.card = ([DocBrowser.styled("card", nothing)], nothing)
+    b.hover_at = (2, 60)
+    frame(b)
+    @test [p.picture for p in b.placements] == [mark]
+    b.card = nothing
+    # A picture that the terminal fails to draw gives way to the dots again.
+    @test handle!(b, DocBrowser.GraphicsEvent(logo.id, false)) && occursin("● ●", start())
+    # The terminal keeps the pictures while an editor has the screen. Closing frees them.
+    DocBrowser.leave_screen(b)
+    DocBrowser.enter_screen(b)
+    @test !occursin("\e_G", written()) && b.pictures == [mark]
+    DocBrowser.leave_screen(b, true)
+    @test occursin("a=d,q=2,d=I,i=$(mark.id)", written())
+    withenv("JULIA_DOCBROWSER_IMAGES" => "no") do
+        b = DocBrowser.opening(fake_terminal(""))
+        @test isempty(written()) && b.answered
+    end
+    # The terminal is asked once, before the browser is made, and the first frame waits for
+    # its answer, so the dots never show.
+    t = fake_terminal("\e[6;15;7t\e_Gi=31;OK\e\\\e[?62c\e_Gi=0;OK\e\\\e_Gi=0;OK\e\\q")
+    browse(t)
+    out = String(take!(t.out_stream.io))
+    @test !occursin("●●●", out) && occursin("a=p,q=1,C=1,i=$(mark.id),", out)
+    @test count(DocBrowser.GRAPHICS_QUERY, out) == 1
 end
 
 @testset "search engine" begin

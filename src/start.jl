@@ -76,20 +76,29 @@ const START_KEYS = (("/", "search names, the manual and the text of docstrings")
 version_string() = string(@static isdefined(Base, :version_with_build_variant) ? Base.version_with_build_variant() : VERSION)
 
 """
-    version_block!(pb)
+    version_block!(pb, logo=nothing)
 
-The version of Julia and what kind of build it is, beside the Julia logo.
+The version of Julia and what kind of build it is, beside the Julia logo. The logo is the
+picture `logo` where the terminal has it, and three dots otherwise.
 """
-function version_block!(pb::PageBuilder)
+function version_block!(pb::PageBuilder, logo::Union{Nothing,Picture}=nothing)
     git = Base.GIT_VERSION_INFO
     kind = isempty(VERSION.prerelease) ? "release" :
         "DEV" in VERSION.prerelease ? "development build" : "prerelease"
     date = isempty(git.date_string) ? "" : string(", ", first(split(git.date_string)))
-    # The Julia logo's three dots, beside the version.
-    addline!(pb, "   ", ("●", :REPL_DocBrowser_logo_green), "    ",
-             ("Julia ", :REPL_DocBrowser_pane_title), (version_string(), :REPL_DocBrowser_title))
-    addline!(pb, "  ", ("●", :REPL_DocBrowser_logo_red), " ", ("●", :REPL_DocBrowser_logo_purple), "   ",
-             (kind * date, :REPL_DocBrowser_dim))
+    julia = ("Julia ", :REPL_DocBrowser_pane_title)
+    version = (version_string(), :REPL_DocBrowser_title)
+    build = (kind * date, :REPL_DocBrowser_dim)
+    if logo !== nothing
+        push!(pb.images, PageImage(length(pb.lines) + 1, 3, logo))
+        addline!(pb)
+        addline!(pb, " "^14, julia, version)
+        addline!(pb, " "^14, build)
+        addline!(pb)
+        return pb
+    end
+    addline!(pb, "   ", ("●", :REPL_DocBrowser_logo_green), "    ", julia, version)
+    addline!(pb, "  ", ("●", :REPL_DocBrowser_logo_red), " ", ("●", :REPL_DocBrowser_logo_purple), "   ", build)
 end
 
 # The release notes of this version of Julia: installed with the manual, or in the source tree.
@@ -101,15 +110,16 @@ function release_notes()
 end
 
 """
-    start_page(cat, width, tip=1, pos=tip) -> Page
+    start_page(cat, width, tip=1, pos=tip, logo=nothing) -> Page
 
 The start page: this Julia, and where to begin, how to find things, the packages of the
-active project, the release notes, and tip number `tip`, shown as the `pos`th.
+active project, the release notes, and tip number `tip`, shown as the `pos`th. `logo` is the
+picture of the Julia logo, where the terminal has it.
 """
-function start_page(cat::Catalog, width::Int, tip::Int=1, pos::Int=tip)
+function start_page(cat::Catalog, width::Int, tip::Int=1, pos::Int=tip, logo::Union{Nothing,Picture}=nothing)
     pb = PageBuilder(width)
     addline!(pb)
-    version_block!(pb)
+    version_block!(pb, logo)
 
     section!(pb, START_SECTIONS[1])
     chapters = ManualPage[]
