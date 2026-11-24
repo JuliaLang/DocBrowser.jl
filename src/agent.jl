@@ -37,6 +37,10 @@ end
 load_hint() = CLI[] ? "run this again with `--load`" : "call this again with `load=true`"
 search_hint() = CLI[] ? "search for it with `jldocs find`" : "search for it with `DocBrowser.find_docs`"
 
+# A package that a name is asked for in is loaded without being asked to, unless it would
+# have to be precompiled first, which can take minutes.
+loads_quickly(id::PkgId) = dynamic(Base.isprecompiled)(id)::Bool
+
 """
     DocBrowser.lookup(query; outline=false, section=0, width=100, context=Main, load=false) -> String
 
@@ -49,9 +53,11 @@ Links in the text end in a number, as in `sort[3]`, and the list at the end give
 links to, in a form that `lookup` takes. With `outline`, only the headings of the page are
 listed, numbered; `section` gives the text under one of them.
 
-A package of the active project that is not loaded stays unloaded, and its page shows what its
-source documents, such as its README. With `load`, it is loaded first, which runs its code,
-and then its docstrings can be read.
+A package of the active project that a name is asked for in, such as `Plots` for `Plots.plot`,
+is loaded first, which runs its code, so that its docstrings can be read. If it would have to
+be precompiled first, it is only loaded with `load`, and until then its page shows what its
+source documents, such as its README. `load` also loads the other packages of the project
+when `query` is not found without them.
 """
 function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brief::Bool=false,
                 width::Int=100, context::Module=Main, load::Bool=false)
@@ -72,7 +78,7 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
         return "Nothing is called $(repr(query)); $(search_hint()).$note\n" * unloaded_note(b.cat)
     end
     t isa URLTarget && return "$(query) is a web page: $(t.url)\n"
-    if t isa LoadTarget && load
+    if t isa LoadTarget && (load || loads_quickly(t.id))
         Core.eval(Main, :(import $(Symbol(t.id.name))))
         HEADLESS[] = nothing # the catalog was made before the package was loaded
         return invokelatest(lookup, query; outline, section, brief, width, context)
@@ -91,8 +97,8 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
     println(io, "# ", title, v === nothing ? "" : "  ($v)")
     path = page_path(key, p)
     path === nothing || println(io, "Path: ", path)
-    key isa LoadTarget && println(io, "(", key.id.name, " is not loaded, so its docstrings cannot be read. ",
-                                  "To load it, which runs its code, ", load_hint(), ".)")
+    key isa LoadTarget && println(io, "(", key.id.name, " is not precompiled, so it was not loaded and its docstrings ",
+                                  "cannot be read. To precompile and load it, ", load_hint(), ".)")
     # A package's manual, whose pages are listed in the browser with its names.
     name = key isa ModuleTarget && parentmodule(key.mod) === key.mod ? String(nameof(key.mod)) :
            key isa LoadTarget && isempty(key.then) ? key.id.name : nothing
@@ -443,7 +449,8 @@ function list_names(mod::Union{Module,AbstractString}; internal::Bool=false, loa
     if !(mod isa Module)
         t = agent_target(b.cat, String(mod), Main)
         if t isa LoadTarget && isempty(t.then)
-            load || return "$(mod) is not loaded. To load it, which runs its code, $(load_hint()).\n"
+            load || loads_quickly(t.id) ||
+                return "$(mod) is not precompiled, so it was not loaded. To precompile and load it, $(load_hint()).\n"
             Core.eval(Main, :(import $(Symbol(t.id.name))))
             HEADLESS[] = nothing
             return invokelatest(list_names, mod; internal)
@@ -637,9 +644,12 @@ const AGENT_USAGE = """
       names <module> [--internal] [--load]
           The names of a module, by kind, and whether each is exported or public.
 
-    The project is the one the current directory is in, or the one `--project PATH` names. Its
-    packages are not loaded without `--load`, which runs their code; until then their pages show
-    what their source documents, such as the README, and `find` does not know their names.
+    The project is the one the current directory is in, or the one `--project PATH` names. A
+    package that `show` or `names` is asked about, such as Plots for `Plots.plot`, is loaded,
+    which runs its code, unless it would have to be precompiled first; `--load` does that too.
+    `--load` also loads all the project's packages for `find`, and for a name not found without
+    them. A package that is not loaded has a page of what its source documents, such as the
+    README, and `find` does not know its names.
     Julia's manual is downloaded the first time it is needed.
 
     Several commands in one call, split by `+` or one a line for `-`, start Julia and load the
