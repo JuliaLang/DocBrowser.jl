@@ -368,7 +368,7 @@ end
             lid = Base.PkgId(linkuuid, link)
             @test lid in b.cat.unloaded
             @test only(r for r in b.side_rows if r.unloaded == lid).role === :project
-            @test any(r -> r[1] == "$link/index", DocBrowser.search_package_manuals(b, link))
+            @test any(r -> r[1] == "$link/index", DocBrowser.search_package_manuals(b.cat, link))
             @test occursin("$link is the active project", join(String.(DocBrowser.page(b, DocBrowser.LoadTarget(lid), 80).lines), '\n'))
             Base.set_active_project(joinpath(env, "Project.toml"))
             b = Browser(fake_terminal(""))
@@ -1143,9 +1143,8 @@ end
             # In plain text, the manual's pages have addresses that `lookup` and `find_docs` know.
             hb = Browser(fake_terminal(""), cat)
             DocBrowser.HEADLESS[] = hb
-            DocBrowser.PACKAGE_MANUALS[] = nothing
             try
-                pm = only(m for m in DocBrowser.package_manuals(hb) if m.name == "DocsFixture")
+                pm = only(m for m in DocBrowser.package_manuals(cat) if m.name == "DocsFixture")
                 @test pm.refs == ["DocsFixture/index", "DocsFixture/man/api"]
                 @test occursin("DocsFixture/man/api  API", DocBrowser.lookup("DocsFixture/"))
                 api_page = DocBrowser.lookup("DocsFixture/man/api")
@@ -1153,7 +1152,6 @@ end
                 @test occursin("DocsFixture/man/api  manual of DocsFixture: API", DocBrowser.find_docs("api"))
             finally
                 DocBrowser.HEADLESS[] = nothing
-                DocBrowser.PACKAGE_MANUALS[] = nothing
             end
             # The names pane lists the pages before the names, and picking one shows it.
             b = Browser(fake_terminal(""), cat)
@@ -1345,7 +1343,7 @@ end
     press!(b, :escape)
     # Indirect dependencies are left out of searches until asked for.
     b.cat.bymod[Fixture] = DocBrowser.PkgEntry(Fixture, Base.PkgId(Base.UUID(UInt128(3)), "Fixture"),
-                                               nothing, :indirect, String[], nothing)
+                                               nothing, :indirect, Base.PkgId[], nothing)
     press!(b, '/', "documented"...)
     @test b.hidden > 0 && !any(e -> e.mod === Fixture, b.results)
     @test b.name_rows[end].kind === :more
@@ -1835,19 +1833,31 @@ end
                  :indirect => "indirect dependency", :extension => "package extension")
     # a module that is not bound in `Main`, where `Pkg.test` runs these tests
     m = Module(:RoleFixture)
+    base, core = Base.PkgId(Base), Base.PkgId(Core)
     for (role, words) in roles
-        cat.bymod[m] = DocBrowser.PkgEntry(m, id, v"1.2.3", role, ["Base", "Core"], "Base")
-        text = join(first.(DocBrowser.role_line(cat, m)))
+        cat.bymod[m] = DocBrowser.PkgEntry(m, id, v"1.2.3", role, [base, core], base)
+        segs = DocBrowser.role_line(cat, m)
+        text = join(first.(segs))
         @test occursin(words, text)
         role === :indirect && @test occursin("loaded by Base → Core", text)
+        role === :extension && @test ("Base", nothing, ModuleTarget(Base)) in segs
     end
+    # Of two loaded packages with one name, a link goes to the one whose `PkgId` it is, and
+    # the name alone to the one the project depends on.
+    twin, other = Module(:Twin), Module(:Twin)
+    ids = [Base.PkgId(Base.UUID(UInt128(n)), "Twin") for n in (11, 12)]
+    push!(cat.pkgs, DocBrowser.PkgEntry(twin, ids[1], nothing, :indirect, Base.PkgId[], nothing),
+          DocBrowser.PkgEntry(other, ids[2], nothing, :direct, Base.PkgId[], nothing))
+    @test DocBrowser.package_target(cat, ids[1]) == ModuleTarget(twin)
+    @test DocBrowser.package_target(cat, ids[2]) == DocBrowser.package_target(cat, "Twin") == ModuleTarget(other)
+    resize!(cat.pkgs, length(cat.pkgs) - 2)
     # A standard library says so, wherever it is.
-    cat.bymod[Fixture] = DocBrowser.PkgEntry(Fixture, Base.PkgId(Markdown), nothing, :indirect, String[], "Base")
+    cat.bymod[Fixture] = DocBrowser.PkgEntry(Fixture, Base.PkgId(Markdown), nothing, :indirect, Base.PkgId[], base)
     @test occursin("indirect dependency · standard library", join(first.(DocBrowser.role_line(cat, Fixture))))
     @test occursin("submodule of", join(first.(DocBrowser.role_line(cat, Fixture.Inner))))
     delete!(cat.bymod, Fixture)
     # An extension shows neither the README nor the links of the package it extends.
-    cat.bymod[UndocumentedExt] = DocBrowser.PkgEntry(UndocumentedExt, id, nothing, :extension, String[], "Base")
+    cat.bymod[UndocumentedExt] = DocBrowser.PkgEntry(UndocumentedExt, id, nothing, :extension, Base.PkgId[], base)
     text = join(String.(module_page(cat, UndocumentedExt, 80).lines), '\n')
     @test occursin("No docstring found", text)
     @test !occursin("search the web", text)
@@ -2074,6 +2084,13 @@ end
         @test !DocBrowser.wants_manual(bar) && !DocBrowser.wants_manual(baz)
         DocBrowser.save_records!(Dict("Baz/abcde" => Dict{String,Any}("failed" => round(Int, time()) - 2 * 86400, "reason" => "x")))
         @test DocBrowser.wants_manual(baz)
+        # A reason is read back as it was written, whatever is in it, and so are the other records.
+        why = "no \$ref of \"o/r\" at C:\\docs"
+        DocBrowser.save_records!(Dict("Baz/abcde" => Dict{String,Any}("none" => why)))
+        DocBrowser.RECORDS[] = nothing
+        @test DocBrowser.record(baz)["none"] == why && !DocBrowser.wants_manual(bar)
+        # A package with no project file has no version, rather than being an error.
+        @test DocBrowser.installed_version(mktempdir()) === nothing
     finally
         popfirst!(DEPOT_PATH)
         DocBrowser.RECORDS[] = nothing

@@ -16,8 +16,8 @@ struct PkgEntry
     id::PkgId
     version::Union{Nothing,VersionNumber}
     role::Symbol
-    via::Vector{String}
-    parent::Union{Nothing,String}
+    via::Vector{PkgId}
+    parent::Union{Nothing,PkgId} # the package that an extension extends
 end
 
 in_stdlib_dir(dir) = dir !== nothing && startswith(normpath(dir), normpath(Sys.STDLIB))
@@ -179,6 +179,7 @@ mutable struct Catalog
     manual_index::Tuple{Any,Dict{String,Int}} # the place of each page in `manual`, by its path
     # where the manual of each package is, with or without a downloaded copy, for so many packages
     docs_dirs::Tuple{Int,Vector{Tuple{String,PkgEntry}}}
+    manuals::Any # the manuals of the packages, with the address of each page, found on first use
 end
 
 function parse_uuids(deps)
@@ -197,6 +198,10 @@ function read_project(path)
     d = @attempt Base.parsed_toml(path) return nothing
     return d isa AbstractDict ? d : nothing
 end
+
+# The project file of the package at `dir`, which is empty when it has none that can be read.
+package_project(dir::String) =
+    something(read_project(Base.env_project_file(dir)), Dict{String,Any}())::Dict{String,Any}
 
 function project_info()
     d = read_project(Base.active_project())
@@ -254,14 +259,15 @@ function package_deps(m::Module)
     ext === nothing || return UUID[id.uuid for id in ext if id.uuid !== nothing]
     dir = pkgdir(m)
     dir === nothing && return UUID[]
-    d = read_project(Base.env_project_file(dir))
-    d === nothing && return UUID[]
-    return parse_uuids(get(d, "deps", nothing))
+    return parse_uuids(get(package_project(dir), "deps", nothing))
 end
+
+# Load package `id` into `Main`, as `import` at the prompt does.
+import_package(id::PkgId) = Core.eval(Main, Expr(:import, Expr(:., Symbol(id.name))))
 
 function extension_parent(id::PkgId)
     parents = @lock Base.require_lock get(Base.EXT_PRIMED, id, nothing)
-    return parents === nothing || isempty(parents) ? nothing : first(parents).name
+    return parents === nothing || isempty(parents) ? nothing : first(parents)
 end
 
 bound_in_main(m::Module) =
@@ -314,17 +320,17 @@ function Catalog()
         uuid = PkgId(m).uuid
         uuid === nothing || (byuuid[uuid] = m)
     end
-    via = IdDict{Module,Vector{String}}()
+    via = IdDict{Module,Vector{PkgId}}()
     queue = Module[m for m in mods if roles[m] in (:project, :direct)]
     for m in queue
-        via[m] = String[]
+        via[m] = PkgId[]
     end
     while !isempty(queue)
         m = popfirst!(queue)
         for uuid in package_deps(m)
             dep = get(byuuid, uuid, nothing)
             (dep === nothing || haskey(via, dep)) && continue
-            via[dep] = [via[m]; String(nameof(m))]
+            via[dep] = [via[m]; PkgId(m)]
             push!(queue, dep)
         end
     end
@@ -333,7 +339,7 @@ function Catalog()
         id = PkgId(m)
         version = roles[m] === :julia ? VERSION :
             roles[m] in (:main, :extension) || is_bundled(m) ? nothing : pkgversion(m)
-        push!(pkgs, PkgEntry(m, id, version, roles[m], get(via, m, String[]), extension_parent(id)))
+        push!(pkgs, PkgEntry(m, id, version, roles[m], get(via, m, PkgId[]), extension_parent(id)))
     end
     rank(p) = (p.role === :julia ? findfirst(==(p.mod), (Base, Core)) : 0,
                isjll(p.id.name), lowercase(p.id.name))
@@ -342,7 +348,7 @@ function Catalog()
     return Catalog(pkgs, bymod, documented_bindings(), IdDict{Module,Vector{NameEntry}}(), nothing,
                    unloaded_deps(), nothing, manual_pages(), nothing, Dict{String,Vector{Heading}}(), Dict{String,Vector{Heading}}(), nothing,
                    Dict{String,Any}(), nothing, Matches(), Matches(), Matches(), (nothing, Dict{String,Int}()),
-                   (0, Tuple{String,PkgEntry}[]))
+                   (0, Tuple{String,PkgEntry}[]), nothing)
 end
 
 function documented_bindings()
@@ -519,8 +525,8 @@ function unloaded_names(cat::Catalog)
         id === nothing || id in loaded || push!(places, (id, joinpath(Sys.STDLIB, name, "docs", "src")))
     end
     for id in cat.unloaded
-        path = dynamic(Base.locate_package)(id)::Union{Nothing,String}
-        path === nothing || push!(places, (id, joinpath(dirname(dirname(path)), "docs", "src")))
+        dir = unloaded_dir(id)
+        dir === nothing || push!(places, (id, joinpath(dir, "docs", "src")))
     end
     for (id, dir) in places
         isdir(dir) || continue
@@ -573,7 +579,7 @@ function search_unloaded(cat::Catalog, query::AbstractString; limit::Int=50)
     return Tuple{String,PkgId}[(x[2], x[3]) for x in Iterators.take(scored, limit)]
 end
 
-const ROLE_BOOST = (project = 60, direct = 60, julia = 50, main = 50, stdlib = 20, indirect = 0, extension = 0)
+const ROLE_BOOST = (project = 60, direct = 60, julia = 50, main = 50, indirect = 0, extension = 0)
 const VIS_BOOST = (exported = 40, public = 30, internal = 0)
 
 """
