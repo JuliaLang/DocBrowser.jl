@@ -473,14 +473,19 @@ function agent_target(cat::Catalog, query::String, ctx::Module)
         for m in values(Base.loaded_modules)
             nameof(m) === Symbol(parts[1]) && pushfirst!(roots, m)
         end
+        unloaded = findfirst(id -> id.name == parts[1], cat.unloaded)
+        load = unloaded === nothing ? nothing :
+            LoadTarget(cat.unloaded[unloaded], length(parts) > 1 ? join(parts[2:end], '.') : "")
         for root in unique!(roots)
             t = name_target(root, root === ctx || root === Main || root === Base || root === Core ?
                                   parts : parts[2:end])
-            t === nothing || return t
+            t === nothing && continue
+            # An internal name of Base, such as its `Downloads`, does not hide a package of the project.
+            load !== nothing && root !== ctx && root in (Base, Core) &&
+                !Base.ispublic(root, Symbol(parts[1])) && return load
+            return t
         end
-        for id in cat.unloaded
-            id.name == parts[1] && return LoadTarget(id, length(parts) > 1 ? join(parts[2:end], '.') : "")
-        end
+        load === nothing || return load
     end
     return place_target("docs: " * s, cat)
 end
