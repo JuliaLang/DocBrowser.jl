@@ -332,7 +332,9 @@ function manual_context(path::String, cat::Union{Nothing,Catalog}=nothing)
     end
     name = stdlib_name(path)
     for m in Base.loaded_modules_array()
-        String(nameof(m)) == name && return m
+        id = PkgId(m)
+        # a package can have the name of a standard library
+        id.name == name && is_stdlib(id) && return m
     end
     return Main
 end

@@ -1343,7 +1343,7 @@ end
     press!(b, :escape)
     # Indirect dependencies are left out of searches until asked for.
     b.cat.bymod[Fixture] = DocBrowser.PkgEntry(Fixture, Base.PkgId(Base.UUID(UInt128(3)), "Fixture"),
-                                               nothing, :indirect, String[], nothing)
+                                               nothing, :indirect, Base.PkgId[], nothing)
     press!(b, '/', "documented"...)
     @test b.hidden > 0 && !any(e -> e.mod === Fixture, b.results)
     @test b.name_rows[end].kind === :more
@@ -1833,19 +1833,31 @@ end
                  :indirect => "indirect dependency", :extension => "package extension")
     # a module that is not bound in `Main`, where `Pkg.test` runs these tests
     m = Module(:RoleFixture)
+    base, core = Base.PkgId(Base), Base.PkgId(Core)
     for (role, words) in roles
-        cat.bymod[m] = DocBrowser.PkgEntry(m, id, v"1.2.3", role, ["Base", "Core"], "Base")
-        text = join(first.(DocBrowser.role_line(cat, m)))
+        cat.bymod[m] = DocBrowser.PkgEntry(m, id, v"1.2.3", role, [base, core], base)
+        segs = DocBrowser.role_line(cat, m)
+        text = join(first.(segs))
         @test occursin(words, text)
         role === :indirect && @test occursin("loaded by Base → Core", text)
+        role === :extension && @test ("Base", nothing, ModuleTarget(Base)) in segs
     end
+    # Of two loaded packages with one name, a link goes to the one whose `PkgId` it is, and
+    # the name alone to the one the project depends on.
+    twin, other = Module(:Twin), Module(:Twin)
+    ids = [Base.PkgId(Base.UUID(UInt128(n)), "Twin") for n in (11, 12)]
+    push!(cat.pkgs, DocBrowser.PkgEntry(twin, ids[1], nothing, :indirect, Base.PkgId[], nothing),
+          DocBrowser.PkgEntry(other, ids[2], nothing, :direct, Base.PkgId[], nothing))
+    @test DocBrowser.package_target(cat, ids[1]) == ModuleTarget(twin)
+    @test DocBrowser.package_target(cat, ids[2]) == DocBrowser.package_target(cat, "Twin") == ModuleTarget(other)
+    resize!(cat.pkgs, length(cat.pkgs) - 2)
     # A standard library says so, wherever it is.
-    cat.bymod[Fixture] = DocBrowser.PkgEntry(Fixture, Base.PkgId(Markdown), nothing, :indirect, String[], "Base")
+    cat.bymod[Fixture] = DocBrowser.PkgEntry(Fixture, Base.PkgId(Markdown), nothing, :indirect, Base.PkgId[], base)
     @test occursin("indirect dependency · standard library", join(first.(DocBrowser.role_line(cat, Fixture))))
     @test occursin("submodule of", join(first.(DocBrowser.role_line(cat, Fixture.Inner))))
     delete!(cat.bymod, Fixture)
     # An extension shows neither the README nor the links of the package it extends.
-    cat.bymod[UndocumentedExt] = DocBrowser.PkgEntry(UndocumentedExt, id, nothing, :extension, String[], "Base")
+    cat.bymod[UndocumentedExt] = DocBrowser.PkgEntry(UndocumentedExt, id, nothing, :extension, Base.PkgId[], base)
     text = join(String.(module_page(cat, UndocumentedExt, 80).lines), '\n')
     @test occursin("No docstring found", text)
     @test !occursin("search the web", text)

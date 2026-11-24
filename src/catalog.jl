@@ -16,8 +16,8 @@ struct PkgEntry
     id::PkgId
     version::Union{Nothing,VersionNumber}
     role::Symbol
-    via::Vector{String}
-    parent::Union{Nothing,String}
+    via::Vector{PkgId}
+    parent::Union{Nothing,PkgId} # the package that an extension extends
 end
 
 in_stdlib_dir(dir) = dir !== nothing && startswith(normpath(dir), normpath(Sys.STDLIB))
@@ -267,7 +267,7 @@ import_package(id::PkgId) = Core.eval(Main, Expr(:import, Expr(:., Symbol(id.nam
 
 function extension_parent(id::PkgId)
     parents = @lock Base.require_lock get(Base.EXT_PRIMED, id, nothing)
-    return parents === nothing || isempty(parents) ? nothing : first(parents).name
+    return parents === nothing || isempty(parents) ? nothing : first(parents)
 end
 
 bound_in_main(m::Module) =
@@ -320,17 +320,17 @@ function Catalog()
         uuid = PkgId(m).uuid
         uuid === nothing || (byuuid[uuid] = m)
     end
-    via = IdDict{Module,Vector{String}}()
+    via = IdDict{Module,Vector{PkgId}}()
     queue = Module[m for m in mods if roles[m] in (:project, :direct)]
     for m in queue
-        via[m] = String[]
+        via[m] = PkgId[]
     end
     while !isempty(queue)
         m = popfirst!(queue)
         for uuid in package_deps(m)
             dep = get(byuuid, uuid, nothing)
             (dep === nothing || haskey(via, dep)) && continue
-            via[dep] = [via[m]; String(nameof(m))]
+            via[dep] = [via[m]; PkgId(m)]
             push!(queue, dep)
         end
     end
@@ -339,7 +339,7 @@ function Catalog()
         id = PkgId(m)
         version = roles[m] === :julia ? VERSION :
             roles[m] in (:main, :extension) || is_bundled(m) ? nothing : pkgversion(m)
-        push!(pkgs, PkgEntry(m, id, version, roles[m], get(via, m, String[]), extension_parent(id)))
+        push!(pkgs, PkgEntry(m, id, version, roles[m], get(via, m, PkgId[]), extension_parent(id)))
     end
     rank(p) = (p.role === :julia ? findfirst(==(p.mod), (Base, Core)) : 0,
                isjll(p.id.name), lowercase(p.id.name))

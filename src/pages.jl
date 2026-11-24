@@ -992,16 +992,16 @@ function role_line(cat::Catalog, m::Module)
         push!(segs, ("your workspace module", :REPL_DocBrowser_public))
     elseif p.role === :extension
         push!(segs, ("package extension", dim))
-        p.parent === nothing || push!(segs, (" of ", dim), (p.parent, nothing, package_target(cat, p.parent)))
+        p.parent === nothing || push!(segs, (" of ", dim), (p.parent.name, nothing, package_target(cat, p.parent)))
     else
         push!(segs, ("indirect dependency", dim))
     end
     is_stdlib(p.id) && p.role in (:direct, :indirect) && push!(segs, (" · standard library", dim))
     if !isempty(p.via) && p.role === :indirect
         push!(segs, (" · loaded by ", dim))
-        for (i, name) in enumerate(p.via)
+        for (i, id) in enumerate(p.via)
             i > 1 && push!(segs, (" → ", dim))
-            push!(segs, (name, nothing, package_target(cat, name)))
+            push!(segs, (id.name, nothing, package_target(cat, id)))
         end
     end
     return segs
@@ -1012,11 +1012,23 @@ function in_project(p::PkgEntry)
     return p.id.uuid !== nothing && p.id.uuid in direct
 end
 
-function package_target(cat::Catalog, name::AbstractString)
+function package_target(cat::Catalog, id::PkgId)
     for p in cat.pkgs
-        p.id.name == name && return ModuleTarget(p.mod)
+        p.id == id && return ModuleTarget(p.mod)
     end
     return nothing
+end
+
+# A name alone can be that of several loaded packages. It is then the one that the project
+# depends on, which is the one that `import` would load.
+function package_target(cat::Catalog, name::AbstractString)
+    found = nothing
+    for p in cat.pkgs
+        p.id.name == name || continue
+        p.role in (:project, :direct) && return ModuleTarget(p.mod)
+        found === nothing && (found = p)
+    end
+    return found === nothing ? nothing : ModuleTarget(found.mod)
 end
 
 function count_segments(counts)
@@ -1242,7 +1254,7 @@ function section_page(cat::Catalog, role::Symbol, width::Int)
     pkg && pkg_line!(pb, cat)
     for p in pkgs
         version = p.version === nothing ? "" : string("  v", p.version)
-        via = isempty(p.via) ? "" : string("  via ", join(p.via, " → "))
+        via = isempty(p.via) ? "" : string("  via ", join(String[id.name for id in p.via], " → "))
         addline!(pb, "    ", (p.id.name, nothing, ModuleTarget(p.mod)), (version * via, :REPL_DocBrowser_dim))
     end
     if role in (:project, :direct)
