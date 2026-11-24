@@ -44,6 +44,9 @@ Code, copy its directory to `~/.claude/skills/julia-docs`.
 - It works in the project of the current directory, or `--project PATH`.
 - It loads a package that a name is asked for in, such as Plots for `Plots.plot`, unless it would have
   to be precompiled first. `--load` does that too, and loads all your packages for `find` and bare names.
+- Two packages of the project with one name are told apart as Pkg does, by the UUID after the name,
+  or any start of it that only one of them has: `jldocs show Example=7876af07.hello`. The name alone
+  is the one the project depends on.
 - Every page gives its local file as `Path:`, so an agent can also read or `grep` it.
 - Several commands, split by `+` or one a line from standard input with `jldocs -`, start Julia
   and load packages once. Each answer starts with a `## jldocs <command>` line, and `--load` in one is for all.

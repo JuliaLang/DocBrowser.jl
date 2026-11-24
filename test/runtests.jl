@@ -489,6 +489,56 @@ end
             end
             DocBrowser.CLI[] = false
             @test occursin("$bare.bare_f  function, exported", out) && occursin("Found bare.", out)
+            # Two packages with one name: the project depends on the first, and on a package
+            # that depends on the second. The name alone is the first, and the start of a UUID
+            # after the name picks either, as Pkg writes it.
+            twin = "DocBrowserTwin"
+            ua, ub = "aaaaaaaa-1111-4111-8111-111111111111", "aaaaaaaa-2222-4222-8222-222222222222"
+            uc = "5d9c9a4e-3b0e-4f53-9c1e-6c1f2a7b8d20"
+            path(parts...) = replace(joinpath(dir, parts...), '\\' => '/')
+            for (sub, u, which) in (("a", ua, "first"), ("b", ub, "second"))
+                mkpath(joinpath(dir, sub, twin, "src"))
+                mkpath(joinpath(dir, sub, twin, "docs", "src"))
+                write(joinpath(dir, sub, twin, "Project.toml"), "name = \"$twin\"\nuuid = \"$u\"\n")
+                write(joinpath(dir, sub, twin, "src", "$twin.jl"),
+                      "module $twin\nexport twin_f\n\"The $which twin.\"\ntwin_f() = 1\nend\n")
+                write(joinpath(dir, sub, twin, "docs", "src", "index.md"), "# The $which manual\n")
+            end
+            mkpath(joinpath(dir, "Carrier", "src"))
+            write(joinpath(dir, "Carrier", "Project.toml"), "name = \"Carrier\"\nuuid = \"$uc\"\n[deps]\n$twin = \"$ub\"\n")
+            write(joinpath(dir, "Carrier", "src", "Carrier.jl"), "module Carrier\nimport $twin\nend\n")
+            mkpath(joinpath(dir, "twins"))
+            write(joinpath(dir, "twins", "Project.toml"), "[deps]\n$twin = \"$ua\"\nCarrier = \"$uc\"\n")
+            write(joinpath(dir, "twins", "Manifest.toml"), """
+                manifest_format = "2.0"
+                [[deps.$twin]]
+                uuid = "$ua"
+                path = "$(path("a", twin))"
+                [[deps.$twin]]
+                uuid = "$ub"
+                path = "$(path("b", twin))"
+                [[deps.Carrier]]
+                uuid = "$uc"
+                path = "$(path("Carrier"))"
+                    [deps.Carrier.deps]
+                    $twin = "$ub"
+                """)
+            Base.set_active_project(joinpath(dir, "twins", "Project.toml"))
+            DocBrowser.HEADLESS[] = nothing
+            # A start that both UUIDs have picks neither, and the answer gives one for each.
+            @test occursin("$twin=aaaaaaaa-1, $twin=aaaaaaaa-2", DocBrowser.lookup("$twin=aaaa.twin_f"))
+            # The second is only in the manifest, and is loaded by its UUID, written with or
+            # without its hyphens. The name alone then still loads the first.
+            second = DocBrowser.lookup("$twin=aaaaaaaa2.twin_f"; load=true)
+            @test startswith(second, "# $twin=aaaaaaaa-2.twin_f") && occursin("The second twin.", second)
+            one = DocBrowser.lookup("$twin.twin_f"; load=true)
+            @test startswith(one, "# $twin=aaaaaaaa-1.twin_f") && occursin("The first twin.", one)
+            # What is found says which is which, in a form that is taken again.
+            found = DocBrowser.find_docs("twin_f")
+            @test occursin("$twin=aaaaaaaa-1.twin_f  function", found) && occursin("$twin=aaaaaaaa-2.twin_f  function", found)
+            @test occursin("$twin=aaaaaaaa-2/index  The second manual", DocBrowser.lookup("$twin=aaaaaaaa-2/"))
+            @test occursin("$twin=aaaaaaaa-1/index  The first manual", DocBrowser.lookup("$twin/"))
+            @test startswith(DocBrowser.list_names("$twin=aaaaaaaa-2"), "# $twin=aaaaaaaa-2\n")
             DocBrowser.HEADLESS[] = nothing
         finally
             popfirst!(DEPOT_PATH)

@@ -759,16 +759,25 @@ function git_remote(dir)
     return m === nothing ? nothing : m[1]
 end
 
-function manifest_repo(id::PkgId)
+# The entries of the active project's manifest for the packages called `name`. There can be
+# several, with different UUIDs.
+function manifest_entries(name::String)
+    entries = Dict{String,Any}[]
     project = Base.active_project()
-    project === nothing && return nothing
-    manifest = Base.project_file_manifest_path(project)
-    d = read_project(manifest)
-    d === nothing && return nothing
-    entries = get(get(d, "deps", d), id.name, nothing)
-    entries isa AbstractVector || return nothing
-    for e in entries
-        e isa AbstractDict && get(e, "uuid", nothing) == string(id.uuid) || continue
+    project === nothing && return entries
+    d = read_project(Base.project_file_manifest_path(project))
+    d === nothing && return entries
+    listed = get(get(d, "deps", d), name, nothing)
+    listed isa AbstractVector || return entries
+    for e in listed
+        e isa Dict{String,Any} && push!(entries, e)
+    end
+    return entries
+end
+
+function manifest_repo(id::PkgId)
+    for e in manifest_entries(id.name)
+        get(e, "uuid", nothing) == string(id.uuid) || continue
         url = get(e, "repo-url", nothing)
         return url isa String ? url : nothing
     end
@@ -1286,8 +1295,11 @@ function unloaded_page(cat::Catalog, id::PkgId, width::Int, then::String="")
     addline!(pb)
     title = isempty(then) ? id.name : startswith(then, id.name * ".") ? then : "$(id.name).$then"
     addline!(pb, "  ", (title, :REPL_DocBrowser_title))
+    # A package picked by its UUID can be one that only another package depends on.
+    direct = stdlib || self || id in cat.unloaded
     addline!(pb, "  ", (stdlib ? "standard library · not loaded" : self ? "the active project · not loaded" :
-                         "direct dependency · not loaded", :REPL_DocBrowser_dim))
+                         direct ? "direct dependency · not loaded" : "indirect dependency · not loaded",
+                         :REPL_DocBrowser_dim))
     dir === nothing || addline!(pb, "  ", (Base.contractuser(dir), :REPL_DocBrowser_dim))
     add_links!(pb, id, dir, stdlib ? :stdlib : :direct)
     # Its manual, which its source has, can be read before it is loaded.
@@ -1300,9 +1312,9 @@ function unloaded_page(cat::Catalog, id::PkgId, width::Int, then::String="")
     rule!(pb)
     what = isempty(then) ? "its docstrings are" : "the docstring of $then is"
     whose = stdlib ? "$(id.name) is a standard library" : self ? "$(id.name) is the active project" :
-        "The active project depends on $(id.name)"
-    addtext!(pb, "  ", "$whose, but it has not been loaded yet, so $what not available. Loading it runs " *
-                       "import $(id.name) in Main.")
+        direct ? "The active project depends on $(id.name)" : "A package of the active project depends on $(id.name)"
+    how = direct ? "import $(id.name) in Main" : "its code"
+    addtext!(pb, "  ", "$whose, but it has not been loaded yet, so $what not available. Loading it runs $how.")
     addline!(pb)
     addline!(pb, "  ", (" Load $(id.name) ", :REPL_DocBrowser_link_active, LoadTarget(id, then)),
              ("  or press ⏎", :REPL_DocBrowser_dim))

@@ -26,7 +26,8 @@ Run them in the project's directory, or pass `--project PATH`.
   `stdlib/Random`, `base/sort`), or a page of a package's manual
   (`GLMakie/explanations/figure#The-px_per_unit-factor`). `show manual` lists the pages of
   Julia's manual, and `show GLMakie/` those of a package's. The first line gives the version
-  the page is about.
+  the page is about. When two packages of the project have one name, results write each as
+  `Example=7876af07`, the name and the start of its UUID, which `show` and `names` take.
 - `jldocs names <module>`: the names of a module, by kind, and whether each is exported
   or public. `--internal` adds the others.
 - Several commands can go in one call, split by `+`, as in
