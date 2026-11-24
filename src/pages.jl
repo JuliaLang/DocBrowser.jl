@@ -108,7 +108,7 @@ function concat(parts...)
     anns = Annotations()
     for p in parts
         off = position(io)
-        p isa SubString{AnnotatedString{String}} && (p = AnnotatedString(p))
+        p isa SubString{AnnotatedString{String}} && (p = dynamic(AnnotatedString)(p)::AnnotatedString{String})
         if p isa AnnotatedString{String}
             write(io, p.string)
             for a in annotations(p)
@@ -125,7 +125,7 @@ end
 
 function styled(text, face)
     str = text isa AnnotatedString{String} || text isa SubString{AnnotatedString{String}} ?
-        AnnotatedString(text) : AnnotatedString(as_string(text))
+        dynamic(AnnotatedString)(text)::AnnotatedString{String} : AnnotatedString(as_string(text))
     s = untab(str)
     isempty(s) || face === nothing || face!(s, face)
     return s
@@ -192,7 +192,7 @@ function render_markdown(md, width::Int)
     else
         show(buf, MIME"text/plain"(), md)
     end
-    return split_lines(read(seekstart(buf), AnnotatedString))
+    return split_lines(dynamic(read)(seekstart(buf), AnnotatedString)::AnnotatedString{String})
 end
 
 # The lines of `str`, each with its part of the annotations. Splitting the annotated text
@@ -596,7 +596,7 @@ function kind_word(e::NameEntry)
     return ismutabletype(T) ? "mutable struct" : "struct"
 end
 
-display_name(m::Module) = join(fullname(m), '.')
+display_name(m::Module) = join(String[String(s) for s in fullname(m)], '.')
 
 function display_name(e::NameEntry)
     is_module_entry(e) && return display_name(e.mod)

@@ -2174,9 +2174,7 @@ end
     @test occursin("A's f.", brief) && occursin("B's method of f.", brief) && !occursin("More about", brief)
 end
 
-# Julia 1.12's own code for annotated strings, which the browser uses everywhere, is invalidated
-# by these methods too.
-VERSION >= v"1.13" && @testset "methods that packages add do not make the browser compile again" begin
+@testset "methods that packages add do not make the browser compile again" begin
     # Methods of the kinds that Symbolics, CategoricalArrays, InlineStrings, StaticArrays,
     # Crayons and FilePathsBase add, which each invalidated some of the browser's code.
     invalidate = """

@@ -601,7 +601,7 @@ function search(cat::Catalog, query::AbstractString; internal::Bool=false, limit
         e = idx[i]
         !internal && (e.vis === :internal || e.deprecated) && return false
         name_score(nameq, lowercase(String(e.name))) > 0 || return false
-        return isempty(modq) || occursin(modq, lowercase(join(fullname(e.mod), '.')))
+        return isempty(modq) || occursin(modq, lowercase(display_name(e.mod)))
     end
     best = Dict{Tuple{Module,Symbol},Tuple{Int,NameEntry}}()
     for i in found

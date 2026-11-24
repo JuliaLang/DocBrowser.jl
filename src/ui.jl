@@ -3314,7 +3314,7 @@ function drain_mouse(io::IO)
     try
         while wait_bytes(io, 0.05)
             dynamic(mark)(io)
-            is_mouse = all(c -> wait_bytes(io, 0.03) && read(io, UInt8) == c, b"\e[<")
+            is_mouse = all(c -> wait_bytes(io, 0.03) && read(io, UInt8) == c, (0x1b, UInt8('['), UInt8('<')))
             dynamic(reset)(io)
             is_mouse || return
             read_event(io)
@@ -3390,7 +3390,7 @@ function fetch_docs!(b::Browser)
     downloader()
     errormonitor(Threads.@spawn begin
         msg = try
-            fetch_package_docs(id, dir)
+            dynamic(fetch_package_docs)(id, dir)
             "Downloaded $(id.name)'s manual"
         catch err
             err isa InterruptException && rethrow()
@@ -3431,7 +3431,7 @@ function autodownload!(b::Browser)
         while time() - LAST_INPUT[] < 1.0 && !b.quit
             sleep(0.25)
         end
-        wanted = packages_wanting_manuals(pkgs, unloaded)
+        wanted = dynamic(packages_wanting_manuals)(pkgs, unloaded)
         isempty(wanted) && return
         # said once it is known which of them have a manual to look for
         names = Ref("")
@@ -3439,7 +3439,7 @@ function autodownload!(b::Browser)
                      manuals_changed!(b; note="Downloading the manuals of $(names[])…"))
         progress(done, total) = done < total &&
             manuals_changed!(b; note="Downloading the manuals of $(names[]) ($done of $total repositories)…")
-        got = fetch_manuals(wanted; start, progress)
+        got = dynamic(fetch_manuals)(wanted; start, progress)::Int
         manuals_changed!(b; note="", status=got == 0 ? nothing :
             "Downloaded the manuals of $got package$(got == 1 ? "" : "s")")
     catch err

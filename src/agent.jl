@@ -84,7 +84,7 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
     io = IOBuffer()
     # the address of the page, without the file that a link to it is given with
     title = something(place_ref(b.cat, key, 0), link_ref(b, key, key), key_title(b, key))
-    title = String(first(split(title, "  ")))
+    title = String(first(split(as_string(title), "  ")))
     v = page_version(key)
     pkgpage = key isa ManualTarget ? package_page(b, key.path) : nothing
     pkgpage === nothing || pkgpage[1].version === nothing || (v = "$(pkgpage[1].name) $(pkgpage[1].version)")

@@ -160,7 +160,7 @@ end
 
 function run_manual_download()
     failure = try
-        download_manual()
+        dynamic(download_manual)()
         nothing
     catch err
         @debug "Downloading the manual failed" exception=(err, catch_backtrace())
