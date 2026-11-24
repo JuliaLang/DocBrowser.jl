@@ -2174,4 +2174,49 @@ end
     @test occursin("A's f.", brief) && occursin("B's method of f.", brief) && !occursin("More about", brief)
 end
 
+@testset "methods that packages add do not make the browser compile again" begin
+    # Methods of the kinds that Symbolics, CategoricalArrays, InlineStrings, StaticArrays,
+    # Crayons and FilePathsBase add, which each invalidated some of the browser's code.
+    invalidate = """
+        struct Num <: Real end
+        Base.:(==)(::Any, ::Num) = false
+        Base.:(>)(::Num, ::Real) = false
+        Base.:(>)(::Real, ::Num) = false
+        Base.:(>=)(::Num, ::Real) = false
+        Base.isequal(::Num, ::Union{AbstractChar,AbstractString,Number}) = false
+        Base.convert(::Type{S}, ::Num) where {S<:Union{AbstractChar,AbstractString,Number}} = error()
+        Base.convert(::Type{Array{T,N}}, ::Num) where {T,N} = error()
+        Base.similar(::Array, ::Type{Num}, ::NTuple{N,Int}) where {N} = error()
+        struct Str <: AbstractString end
+        Base.print(::IO, ::Str) = nothing
+        Base.nextind(::Str, ::Int) = 1
+        Base.length(::Str, ::Int, ::Int) = 0
+        Base.:*(::AbstractString, ::Num) = ""
+        struct File <: IO end
+        Base.write(::File, ::String) = 0
+        """
+    workload = """
+        DocBrowser.lookup("Base.sum"); DocBrowser.lookup("Base.sort!"; brief=true)
+        DocBrowser.lookup("manual/arrays"; outline=true); DocBrowser.find_docs("sort")
+        DocBrowser.list_names("Base.Iterators")
+        out = IOContext(IOBuffer(), :displaysize => (32, 120), :color => true)
+        DocBrowser.browse(DocBrowser.REPL.Terminals.TTYTerminal("xterm", IOBuffer("jjlj\\t/sort\\eq"), out, IOBuffer()); query = "sum")
+        """
+    # The browser's own methods that are compiled while it runs. Methods of Base that it calls
+    # out of sight of inference are compiled again, but they are small.
+    function compiled(code)
+        mktemp() do path, io
+            close(io)
+            cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) --trace-compile=$path -e $code`
+            run(pipeline(addenv(cmd, "JULIA_DOCBROWSER_AUTODOWNLOAD" => "no"); stdout=devnull))
+            own = r"^precompile\(Tuple\{(typeof\()?DocBrowser\."
+            Set(replace(l, " # recompile" => "") for l in readlines(path) if occursin(own, l))
+        end
+    end
+    plain = compiled("using DocBrowser\n" * workload)
+    # loaded after the browser, as with `jldocs --load`, and before it, as from a startup file
+    @test isempty(setdiff(compiled("using DocBrowser\n" * invalidate * workload), plain))
+    @test isempty(setdiff(compiled(invalidate * "using DocBrowser\n" * workload), plain))
+end
+
 foreach((r, v) -> r[] = v, SETTINGS, SAVED)

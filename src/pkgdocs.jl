@@ -26,7 +26,7 @@ function package_docs(cat::Catalog, m::Module)
     (p === nothing || p.role in (:extension, :julia, :main) || parentmodule(m) !== m) && return NO_DOCS
     dir = pkgdir(m)
     dir === nothing && return NO_DOCS
-    return get!(() -> own_or_fetched_docs(dir), cat.pkgdocs, dir)
+    return get!(() -> own_or_fetched_docs(dir), cat.pkgdocs, dir)::PackageDocs
 end
 
 function package_docs(dir::String)
@@ -84,7 +84,7 @@ end
 # The pages that a build script gives `makedocs` as `pages`, as files with the title and group
 # they are listed under, or `nothing` if it gives none as a literal list.
 function doc_page_list(src::String)
-    exprs = @attempt Meta.parseall(src) return nothing
+    exprs = @attempt dynamic(Meta.parseall)(src) return nothing
     # The list may be written out elsewhere in the script, and named.
     named = Dict{Symbol,Any}()
     found = Ref{Any}(nothing)
@@ -237,7 +237,7 @@ const AUTODOCS_ORDER = (:module, :constant, :type, :function, :macro)
 function autodocs_names(code::AbstractString, ctx::Module, cat::Catalog)
     opts = Dict{Symbol,Any}()
     for line in split(code, '\n')
-        ex = @attempt Meta.parse(line; raise=false)
+        ex = @attempt dynamic(Meta.parse)(line; raise=false)
         Meta.isexpr(ex, :(=), 2) && ex.args[1] isa Symbol && (opts[ex.args[1]] = ex.args[2])
     end
     mods = Module[]
@@ -300,14 +300,14 @@ end
 
 # Where a package that is not loaded is, as the environment would load it.
 function unloaded_dir(id::PkgId)
-    path = Base.locate_package(id)
+    path = dynamic(Base.locate_package)(id)::Union{Nothing,String}
     return path === nothing ? nothing : dirname(dirname(path))
 end
 
 # The manual of a package that is not loaded, read from its source.
 function unloaded_docs(cat::Catalog, id::PkgId)
     dir = unloaded_dir(id)
-    return dir === nothing ? NO_DOCS : get!(() -> own_or_fetched_docs(dir), cat.pkgdocs, dir)
+    return dir === nothing ? NO_DOCS : get!(() -> own_or_fetched_docs(dir), cat.pkgdocs, dir)::PackageDocs
 end
 
 # The names that the manual of a package that is not loaded lists.

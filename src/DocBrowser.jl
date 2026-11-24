@@ -170,6 +170,8 @@ end
 # opening the browser compiles most of it again.
 dynamic(f) = Base.inferencebarrier(f)
 as_string(x) = x isa String ? x : dynamic(String)(x)::String
+# Page keys are of many types, so they are compared at run time too.
+same_key(a, b) = dynamic(isequal)(a, b)::Bool
 
 include("catalog.jl")
 include("pages.jl")
@@ -183,7 +185,7 @@ include("ui.jl")
 include("repl.jl")
 include("agent.jl")
 # Without this workload the first open takes about 2 s in every session, nearly all of it
-# type inference, which the JIT object cache does not keep. It costs about 11 MiB.
+# type inference, which the JIT object cache does not keep. It costs about 17 MiB.
 include("precompile.jl")
 
 function __init__()

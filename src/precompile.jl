@@ -82,6 +82,16 @@ function precompile_workload()
     browse(terminal("jjlj\ty"); query = "sum")
     browse(terminal("q"), Base.Iterators)
     browse(terminal("q"))
+    # The command line, as an agent runs it.
+    for args in (["show", "Base.sort!"], ["show", "Base.sort!", "--brief"], ["show", "manual"],
+                 ["show", "manual/arrays", "--outline"], ["show", "manual/arrays", "--section", "1"],
+                 ["show", "nosuchname"], ["find", "sort"], ["names", "Base.Iterators"])
+        c = parse_command(args)
+        c isa AgentCommand && run_command(c)
+    end
+    precompile(main, (Vector{String},))
+    HEADLESS[] = nothing
+    FOUND[] = true
     LAST[] = nothing
     LAYOUT[] = :auto
     FIRST_OPEN[] = true

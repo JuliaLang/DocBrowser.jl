@@ -108,7 +108,7 @@ function concat(parts...)
     anns = Annotations()
     for p in parts
         off = position(io)
-        p isa SubString{AnnotatedString{String}} && (p = AnnotatedString(p))
+        p isa SubString{AnnotatedString{String}} && (p = dynamic(AnnotatedString)(p)::AnnotatedString{String})
         if p isa AnnotatedString{String}
             write(io, p.string)
             for a in annotations(p)
@@ -125,7 +125,7 @@ end
 
 function styled(text, face)
     str = text isa AnnotatedString{String} || text isa SubString{AnnotatedString{String}} ?
-        AnnotatedString(text) : AnnotatedString(as_string(text))
+        dynamic(AnnotatedString)(text)::AnnotatedString{String} : AnnotatedString(as_string(text))
     s = untab(str)
     isempty(s) || face === nothing || face!(s, face)
     return s
@@ -162,7 +162,7 @@ function addflow!(pb::PageBuilder, indent::String, segs::Vector)
     used = textwidth(indent)
     for seg in segs
         group = seg isa Vector ? seg : Any[seg]
-        w = sum(s -> textwidth(String(segment(s)[1])), group; init=0)
+        w = sum(s -> textwidth(String(segment(s)[1])), group; init=0)::Int
         if used + w > pb.width && length(line) > 1
             addline!(pb, line...)
             line = Any[indent]
@@ -192,7 +192,7 @@ function render_markdown(md, width::Int)
     else
         show(buf, MIME"text/plain"(), md)
     end
-    return split_lines(read(seekstart(buf), AnnotatedString))
+    return split_lines(dynamic(read)(seekstart(buf), AnnotatedString)::AnnotatedString{String})
 end
 
 # The lines of `str`, each with its part of the annotations. Splitting the annotated text
@@ -240,7 +240,7 @@ end
 md_text(x::AbstractString) = as_string(x)
 md_text(x::Markdown.Code) = x.code
 md_text(x::Markdown.LaTeX) = x.formula
-md_text(x::AbstractVector) = join(map(md_text, x))
+md_text(x::AbstractVector) = sprint(io -> foreach(y -> print(io, md_text(y)::String), x))
 md_text(@nospecialize(x)) = hasfield(typeof(x), :text) ? md_text(getfield(x, :text)) : ""
 
 """
@@ -322,7 +322,7 @@ function find_spots!(spots::Vector{Spot}, row::Int, line::AnnotatedString, ctx::
             # an `@ref` that leads nowhere the browser knows
             startswith(url, '@') ? nothing :
                 is_manual_link(url) ? manual_target(url) : something(pkgdocs_target(url), URLTarget(url))
-        elseif ann.label === :face && ann.value in (:markdown_inlinecode, :markdown_link)
+        elseif ann.label === :face && (ann.value === :markdown_inlinecode || ann.value === :markdown_link)
             text = strip(str[r])
             resolve_ref(get(refs, text, text), ctx, cat)
         end
@@ -456,7 +456,7 @@ is_julia_code(lang::AbstractString) =
     lang in ("", "julia", "julia-repl") || startswith(lang, "jldoctest") || startswith(lang, "@")
 
 is_code_line(line::AnnotatedString) =
-    any(a -> a.label === :face && a.value in (:markdown_code, :markdown_julia_prompt), annotations(line))
+    any(a -> a.label === :face && (v = a.value; v === :markdown_code || v === :markdown_julia_prompt), annotations(line))
 
 """
     paste_text(lines) -> String
@@ -542,7 +542,7 @@ parse_docs(results::Vector{DocStr}) = Any[dynamic(REPL.parsedoc)(d) for d in res
 function labelled_docs(results::Vector{DocStr})
     docs = parse_docs(results)
     length(docs) > 1 || return docs
-    mods = [get(d.data, :module, nothing) for d in results]
+    mods = Union{Module,Nothing}[(m = get(d.data, :module, nothing); m isa Module ? m : nothing) for d in results]
     labels = length(unique(mods)) > 1
     out = Any[]
     for (i, (m, md)) in enumerate(zip(mods, docs))
@@ -596,7 +596,7 @@ function kind_word(e::NameEntry)
     return ismutabletype(T) ? "mutable struct" : "struct"
 end
 
-display_name(m::Module) = join(fullname(m), '.')
+display_name(m::Module) = join(String[String(s) for s in fullname(m)], '.')
 
 function display_name(e::NameEntry)
     is_module_entry(e) && return display_name(e.mod)
@@ -640,7 +640,7 @@ function add_type_info!(pb::PageBuilder, @nospecialize(T), flags::Set{Symbol})
     add_methods!(pb, "Constructors", methods(T))
     if :methodswith in flags
         # hidden from inference, so it is compiled only when someone asks for it
-        ms = @attempt Base.inferencebarrier(InteractiveUtils.methodswith)(T; supertypes=false) Method[]
+        ms = (@attempt Base.inferencebarrier(InteractiveUtils.methodswith)(T; supertypes=false) Method[])::Vector{Method}
         add_methods!(pb, "Methods that take this type", ms)
         isempty(ms) && (heading!(pb, "Methods that take this type"); addline!(pb, "    ", ("none found", :REPL_DocBrowser_dim)))
     else
@@ -653,8 +653,10 @@ function add_supertypes!(pb::PageBuilder, @nospecialize(T))
     T = Base.unwrap_unionall(T)
     T isa DataType && T !== Any || return
     segs = Any[]
-    for (i, S) in enumerate(InteractiveUtils.supertypes(T)[2:end])
-        i > 1 && push!(segs, (" <: ", :REPL_DocBrowser_dim))
+    sts = InteractiveUtils.supertypes(T)
+    for i in 2:length(sts)
+        S = sts[i]
+        i > 2 && push!(segs, (" <: ", :REPL_DocBrowser_dim))
         push!(segs, (string(nameof(S)), nothing, type_target(S)))
     end
     heading!(pb, "Supertypes")

@@ -109,13 +109,13 @@ function install_when_ready()
     isinteractive() || return nothing
     repl = isdefined(Base, :active_repl) ? Base.active_repl : nothing
     if repl isa REPL.LineEditREPL && isdefined(repl, :interface)
-        install(repl)
+        dynamic(install)(repl)
     else
         # Set up the interface the way the REPL would, so that it can be changed before it runs.
         atreplinit() do repl
             repl isa REPL.LineEditREPL || return
             isdefined(repl, :interface) || (repl.interface = REPL.setup_interface(repl))
-            install(repl)
+            dynamic(install)(repl)
         end
     end
     return nothing

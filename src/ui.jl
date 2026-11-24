@@ -900,7 +900,7 @@ function source_of(b::Browser, x)
     x isa PkgEntry && return source_of(b, ModuleTarget(x.mod))
     if x isa LoadTarget || x isa PkgId
         id = x isa LoadTarget ? x.id : x
-        path = Base.locate_package(id)
+        path = dynamic(Base.locate_package)(id)::Union{Nothing,String}
         return path === nothing ? nothing : SourceTarget(path, 1)
     end
     x isa NameEntry || return nothing
@@ -921,18 +921,18 @@ end
 # The thing that a screen region shows, for finding its source.
 function hit_subject(b::Browser, action)
     action isa Tuple || return nothing
-    kind = first(action)
+    kind = first(action)::Symbol
     if kind === :spot
         p = page(b, current_key(b), doc_width(b))
-        k = action[2]
+        k = action[2]::Int
         return k in eachindex(p.spots) ? p.spots[k].target : nothing
     elseif kind === :side
-        row = get(b.side_rows, action[2], nothing)
+        row = get(b.side_rows, action[2]::Int, nothing)
         row === nothing && return nothing
         row.page === nothing || return SourceTarget(row.page.path, 1)
         return row.unloaded !== nothing ? row.unloaded : row.pkg
     elseif kind === :names
-        row = get(b.name_rows, action[2], nothing)
+        row = get(b.name_rows, action[2]::Int, nothing)
         row === nothing && return nothing
         row.kind === :entry && return row.entry
         row.kind === :hit && return SourceTarget(row.hit.path, hit_line(b.cat, row.hit))
@@ -1031,11 +1031,11 @@ function doc_width(b::Browser)
     return max(10, b.width - 1)
 end
 
-page_flags(b::Browser, key) = get(b.flags, key, Set{Symbol}())
+page_flags(b::Browser, key) = dynamic(get)(b.flags, key, Set{Symbol}())::Set{Symbol}
 
 function page(b::Browser, key, width::Int)
     flags = page_flags(b, key)
-    get!(b.pages, (key, width, sort!(collect(flags)))) do
+    p = dynamic(get!)(b.pages, (key, width, sort!(collect(flags)))) do
         try
             key isa NameEntry ? entry_page(b.cat, key, width, flags) :
             key isa ModuleTarget ? module_page(b.cat, key.mod, width) :
@@ -1055,6 +1055,7 @@ function page(b::Browser, key, width::Int)
             Page(pb)
         end
     end
+    return p::Page
 end
 
 ## Drawing ##
@@ -1178,14 +1179,14 @@ What clicking a region of the screen does, for the status line.
 """
 function describe(b::Browser, action)
     action isa Tuple || return nothing
-    kind = first(action)
+    kind = first(action)::Symbol
     if kind === :spot
         p = page(b, current_key(b), doc_width(b))
-        k = action[2]
+        k = action[2]::Int
         k in eachindex(p.spots) || return nothing
         return describe_target(b, p, p.spots[k].target)
     elseif kind === :side
-        row = get(b.side_rows, action[2], nothing)
+        row = get(b.side_rows, action[2]::Int, nothing)
         row === nothing && return nothing
         row.unloaded === nothing || return "↓ $(row.unloaded.name) is not loaded · ⏎ load it"
         row.role === :pkgdocs && return "Pkg's manual · ⏎ its pages"
@@ -1194,7 +1195,7 @@ function describe(b::Browser, action)
         row.pkg === nothing && return "⏎ fold or unfold this section"
         return "$(row.pkg.id.name) · ⏎ open · right-click: source"
     elseif kind === :names
-        row = get(b.name_rows, action[2], nothing)
+        row = get(b.name_rows, action[2]::Int, nothing)
         row === nothing && return nothing
         row.kind === :header && return "⏎ fold or unfold this group"
         row.kind === :heading && return "↓ jumps to this section of the page"
@@ -1715,12 +1716,12 @@ function draw_doc(b::Browser, x::Int, w::Int)
     n = content_rows(b)
     pw = max(10, w - 1)
     key = current_key(b)
-    if key != b.doc_key
+    if !same_key(key, b.doc_key)
         # The help covers a page for a while, which should be as it was when the help closes.
         under = b.under_help
         key === :help && (b.under_help = (b.doc_key, b.doc_scroll, b.link))
         b.doc_key = key
-        b.doc_scroll, b.link = under !== nothing && under[1] == key ? (under[2], under[3]) : (0, 0)
+        b.doc_scroll, b.link = under !== nothing && same_key(under[1], key) ? (under[2], under[3]) : (0, 0)
         b.mark = 0
         b.doc_line = 0
         b.pointer_block = 0
@@ -1815,10 +1816,9 @@ function frame(b::Browser)
     end
     rows = Vector{String}(undef, H)
     panes = layout(b)
-    cols = Tuple{AnnotatedString{String},Vector{AnnotatedString{String}}}[]
     # Draw the doc pane first, since drawing it updates the current page.
     order = sortperm([pane === :doc ? 0 : 1 for (pane, _, _) in panes])
-    built = Vector{Any}(undef, length(panes))
+    built = Vector{Tuple{AnnotatedString{String},Vector{AnnotatedString{String}}}}(undef, length(panes))
     for i in order
         pane, x, w = panes[i]
         lines = pane === :doc ? draw_doc(b, x, w) : draw_list(b, pane, x, w)
@@ -1925,20 +1925,20 @@ card_width(b::Browser) = clamp(b.width ÷ 2, 30, 64)
 # What the pointer rests on, as something a card can preview, or `nothing`.
 function card_subject(b::Browser, @nospecialize(action))
     action isa Tuple || return nothing
-    kind = first(action)
+    kind = first(action)::Symbol
     if kind === :spot
         p = page(b, current_key(b), doc_width(b))
-        k = action[2]
+        k = action[2]::Int
         k in eachindex(p.spots) || return nothing
         t = p.spots[k].target
         return t isa NameTarget || t isa ModuleTarget || t isa ManualTarget ? t : nothing
     elseif kind === :names
-        row = get(b.name_rows, action[2], nothing)
+        row = get(b.name_rows, action[2]::Int, nothing)
         row === nothing && return nothing
         row.kind === :entry && return row.entry
         row.kind in (:hit, :pkgpage) && return ManualTarget(row.hit.path, row.hit.heading)
     elseif kind === :side
-        row = get(b.side_rows, action[2], nothing)
+        row = get(b.side_rows, action[2]::Int, nothing)
         row === nothing && return nothing
         row.pkg === nothing || return ModuleTarget(row.pkg.mod)
         row.page === nothing || return ManualTarget(row.page.path, "")
@@ -2602,7 +2602,7 @@ end
 function toggle_flag!(b::Browser, flag::Symbol)
     key = current_key(b)
     key isa NameEntry || return
-    flags = get!(Set{Symbol}, b.flags, key)
+    flags = dynamic(get!)(Set{Symbol}, b.flags, key)::Set{Symbol}
     flag in flags ? delete!(flags, flag) : push!(flags, flag)
 end
 
@@ -3070,9 +3070,9 @@ function handle!(b::Browser, ev::MouseEvent)
         end
         hide_card!(b)
         # Clicking anywhere but the search field ends typing in it.
-        (h === nothing || !(first(h.action) in (:search, :toggle_text))) && (b.typing = false)
+        (h === nothing || !(first(h.action)::Symbol in (:search, :toggle_text))) && (b.typing = false)
         # Anything that navigates closes the help, so what it shows is not hidden underneath.
-        h === nothing || first(h.action) in (:help, :scrollbar, :spot) || (b.help = false)
+        h === nothing || first(h.action)::Symbol in (:help, :scrollbar, :spot) || (b.help = false)
         if h === nothing
             press_doc!(b, ev.row, ev.col) && return true
             pane = pane_at(b, ev.row, ev.col)
@@ -3090,9 +3090,9 @@ end
 
 function click!(b::Browser, h::Hit, double::Bool)
     a = h.action
-    kind = first(a)
+    kind = first(a)::Symbol
     if kind in (:side, :names)
-        pane, i = a
+        pane, i = a::Tuple{Symbol,Int}
         b.help = false
         ls = pane === :side ? b.side : b.names
         again = b.focus === pane && ls.cursor == i
@@ -3102,8 +3102,7 @@ function click!(b::Browser, h::Hit, double::Bool)
         b.override = nothing
         pane === :side && sync_side!(b)
         pane === :names && show_heading!(b)
-        rows = pane === :side ? b.side_rows : b.name_rows
-        header = pane === :side ? is_header(rows[i]) : rows[i].kind in (:header, :page)
+        header = pane === :side ? is_header(b.side_rows[i]) : b.name_rows[i].kind in (:header, :page)
         (header || double || (again && pane === :names)) && activate!(b, pane)
     elseif kind === :section
         follow!(b, SectionTarget(a[2]))
@@ -3315,7 +3314,7 @@ function drain_mouse(io::IO)
     try
         while wait_bytes(io, 0.05)
             dynamic(mark)(io)
-            is_mouse = all(c -> wait_bytes(io, 0.03) && read(io, UInt8) == c, b"\e[<")
+            is_mouse = all(c -> wait_bytes(io, 0.03) && read(io, UInt8) == c, (0x1b, UInt8('['), UInt8('<')))
             dynamic(reset)(io)
             is_mouse || return
             read_event(io)
@@ -3391,7 +3390,7 @@ function fetch_docs!(b::Browser)
     downloader()
     errormonitor(Threads.@spawn begin
         msg = try
-            fetch_package_docs(id, dir)
+            dynamic(fetch_package_docs)(id, dir)
             "Downloaded $(id.name)'s manual"
         catch err
             err isa InterruptException && rethrow()
@@ -3432,7 +3431,7 @@ function autodownload!(b::Browser)
         while time() - LAST_INPUT[] < 1.0 && !b.quit
             sleep(0.25)
         end
-        wanted = packages_wanting_manuals(pkgs, unloaded)
+        wanted = dynamic(packages_wanting_manuals)(pkgs, unloaded)
         isempty(wanted) && return
         # said once it is known which of them have a manual to look for
         names = Ref("")
@@ -3440,7 +3439,7 @@ function autodownload!(b::Browser)
                      manuals_changed!(b; note="Downloading the manuals of $(names[])…"))
         progress(done, total) = done < total &&
             manuals_changed!(b; note="Downloading the manuals of $(names[]) ($done of $total repositories)…")
-        got = fetch_manuals(wanted; start, progress)
+        got = dynamic(fetch_manuals)(wanted; start, progress)::Int
         manuals_changed!(b; note="", status=got == 0 ? nothing :
             "Downloaded the manuals of $got package$(got == 1 ? "" : "s")")
     catch err
