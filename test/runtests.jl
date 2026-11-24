@@ -455,6 +455,25 @@ end
             key = DocBrowser.current_key(b)
             @test key isa DocBrowser.NameEntry && key.name === :hello
             b.live = false
+            # A name that a package of the project exports is found without its module, once
+            # the package is loaded.
+            bare, bareuuid = "DocBrowserLoadBare", Base.UUID("5d9c9a4e-3b0e-4f53-9c1e-6c1f2a7b8d18")
+            mkpath(joinpath(dir, bare, "src"))
+            write(joinpath(dir, bare, "Project.toml"), "name = \"$bare\"\nuuid = \"$bareuuid\"\n")
+            write(joinpath(dir, bare, "src", "$bare.jl"), "module $bare\nexport bare_f\n\"Found bare.\"\nbare_f() = 1\nend\n")
+            Base.set_active_project(joinpath(dir, bare, "Project.toml"))
+            DocBrowser.HEADLESS[] = nothing
+            @test occursin("names of a package of the project that is not loaded were not searched: $bare",
+                           DocBrowser.lookup("bare_f"))
+            # `--load` in a later command loads the packages for the ones before it too.
+            out = mktemp() do path, io
+                redirect_stdout(() -> DocBrowser.main(["find", "bare_f", "+", "show", "bare_f", "--load"]), io)
+                close(io)
+                read(path, String)
+            end
+            DocBrowser.CLI[] = false
+            @test occursin("$bare.bare_f  function, exported", out) && occursin("Found bare.", out)
+            DocBrowser.HEADLESS[] = nothing
         finally
             popfirst!(DEPOT_PATH)
             Base.set_active_project(old)

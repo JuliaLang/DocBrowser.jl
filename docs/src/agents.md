@@ -45,7 +45,7 @@ Code, copy its directory to `~/.claude/skills/julia-docs`.
 - It doesn't load your packages (which runs their code) unless you add `--load`.
 - Every page gives its local file as `Path:`, so an agent can also read or `grep` it.
 - Several commands, split by `+` or one a line from standard input with `jldocs -`, start Julia
-  and load packages once. Each answer starts with a `## jldocs <command>` line.
+  and load packages once. Each answer starts with a `## jldocs <command>` line, and `--load` in one is for all.
 - It exits with 0 for an answer, 1 when nothing was found, and 2 for a mistake in the command.
 
 Without the app, `julia --project -m DocBrowser ...` does the same, and in Julia
