@@ -235,6 +235,7 @@ function page_headings(cat::Catalog, path::String)
         md = @attempt Markdown.parse(read(path, String)) return Heading[]
         headings = Heading[]
         walk_md(md) do x
+            @nospecialize x # so that this is not compiled again for each level of heading
             x isa Markdown.Header || return
             text, id = x.text, ""
             link = length(text) == 1 ? text[1] : nothing

@@ -25,8 +25,14 @@ function precompile_workload()
     frame(b)
     follow!(b, SectionTarget(:basedocs))
     frame(b)
-    if !isempty(b.cat.manual)
-        follow!(b, ManualTarget(first(b.cat.manual).path, ""))
+    # Julia's manual is not there when the package is first installed, as it is downloaded when
+    # the browser first opens. A page of the package's own manual then stands in for it, so that
+    # showing a page of a manual is compiled either way.
+    docs = joinpath(something(pkgdir(@__MODULE__), ""), "docs", "src")
+    own_page = joinpath(docs, "index.md")
+    manual = isempty(b.cat.manual) ? own_page : first(b.cat.manual).path
+    if isfile(manual)
+        follow!(b, ManualTarget(manual, ""))
         frame(b)
         b.focus = :names
         handle!(b, KeyEvent(:down))
@@ -82,9 +88,44 @@ function precompile_workload()
     browse(terminal("jjlj\ty"); query = "sum")
     browse(terminal("q"), Base.Iterators)
     browse(terminal("q"))
+    # The kinds of Markdown that the pages of Julia's manual have, for when it is not there.
+    sample = """
+        # One
+        ## Two
+        ### Three
+        #### Four
+        ##### Five
+        ###### Six
+
+        Text with **bold**, *italic*, __bold__, _italic_, `code`, ``x^2``, a [link](https://julialang.org),
+        a footnote[^1] and ![an image](image.png).
+
+        [^1]: The footnote, with a [link](https://julialang.org).
+
+        > A quote with a [link](https://julialang.org).
+
+        !!! note
+            An admonition with `code`.
+
+        | a                             | b   |
+        |:----------------------------- | ---:|
+        | [link](https://julialang.org) | `c` |
+
+        1. one
+        2. two
+             * nested
+
+        ```math
+        x^2
+        ```
+
+        ---
+        """
+    add_markdown!(PageBuilder(80), Markdown.parse(sample), Main, b.cat; contents=true)
     # The command line, as an agent runs it.
+    page = isempty(b.cat.manual) && isfile(own_page) ? own_page : "manual/arrays"
     for args in (["show", "Base.sort!"], ["show", "Base.sort!", "--brief"], ["show", "manual"],
-                 ["show", "manual/arrays", "--outline"], ["show", "manual/arrays", "--section", "1"],
+                 ["show", page, "--outline"], ["show", page, "--section", "1"],
                  ["show", "nosuchname"], ["find", "sort"], ["names", "Base.Iterators"])
         c = parse_command(args)
         c isa AgentCommand && run_command(c)
