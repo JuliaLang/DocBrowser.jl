@@ -13,7 +13,22 @@ const downloader = OncePerProcess{Module}() do
     return m
 end
 download_url(url, out) = Base.invokelatest(downloader().download, url, out)
+download_text(url) = String(take!(download_url(url, IOBuffer())::IOBuffer))
 is_not_found(err) = err isa downloader().RequestError && err.response.status == 404
+
+# Fill a new directory with `f`, then put it at `dir`, in place of what is there. If that
+# fails, nothing is left behind.
+function install_dir(f, dir::String)
+    tmp = mktempdir(mkpath(dirname(dir)))
+    try
+        f(tmp)
+        mv(tmp, dir; force=true)
+    catch
+        rm(tmp; force=true, recursive=true)
+        rethrow()
+    end
+    return dir
+end
 
 # A string as TOML has it. `repr` would write `\$`, which TOML cannot read.
 toml_string(s::AbstractString) =
@@ -36,7 +51,7 @@ end
 function find_manual_ref(refs)
     for ref in refs
         try
-            return ref, String(take!(download_url("$JULIA_RAW/$ref/doc/make.jl", IOBuffer())))
+            return ref, download_text("$JULIA_RAW/$ref/doc/make.jl")
         catch err
             is_not_found(err) || rethrow()
         end
@@ -109,11 +124,9 @@ function download_manual(; force::Bool=false)
     isfile(joinpath(dir, "pages.toml")) && !force && return dir
     ref, make = find_manual_ref(manual_refs())
     base = "$JULIA_RAW/$ref"
-    fetch(rel) = String(take!(download_url("$base/$rel", IOBuffer())))
     lists = make_page_lists(make)
     rels = [lists["manual"]; lists["base"]; (p for g in lists["devdocs"] for p in g["pages"])...]
-    tmp = mktempdir(mkpath(dirname(dir)))
-    try
+    return install_dir(dir) do tmp
         asyncmap(rels; ntasks=16) do rel
             path = joinpath(tmp, rel)
             mkpath(dirname(path))
@@ -126,16 +139,10 @@ function download_manual(; force::Bool=false)
             end
         end
         # The release notes are at the top of the repository; the docs build copies them in.
-        write(joinpath(tmp, "NEWS.md"), fetch("NEWS.md"))
+        write(joinpath(tmp, "NEWS.md"), download_text("$base/NEWS.md"))
         open(io -> write_pages_toml(io, lists), joinpath(tmp, "pages.toml"), "w")
         ref == julia_ref() || write(joinpath(tmp, "source.txt"), ref)
-        force && rm(dir; force=true, recursive=true)
-        mv(tmp, dir; force=true)
-    catch
-        rm(tmp; force=true, recursive=true)
-        rethrow()
     end
-    return dir
 end
 
 # The download that a browser started, so that only one runs at a time, and why the last one

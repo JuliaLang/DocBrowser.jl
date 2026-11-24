@@ -177,6 +177,9 @@ function page_package(cat::Catalog, path::String)
     return nothing
 end
 
+# What the path of every file under the `docs` of the package at `dir` starts with.
+docs_prefix(dir::String) = joinpath(dir, "docs") * Base.Filesystem.path_separator
+
 # The directories that the manual of each package can be in: its `docs`, anywhere under which
 # a build can name the directory of its pages, and that of a downloaded copy, in any depot.
 # Each page of a manual asks, so they are worked out once for the packages there are.
@@ -184,14 +187,13 @@ function docs_dirs(cat::Catalog)
     n, dirs = cat.docs_dirs
     n == length(cat.pkgs) && return dirs
     dirs = Tuple{String,PkgEntry}[]
-    sep = Base.Filesystem.path_separator
     for p in cat.pkgs
         p.role === :extension && continue
         dir = pkgdir(p.mod)
         dir === nothing && continue
-        push!(dirs, (joinpath(dir, "docs") * sep, p))
+        push!(dirs, (docs_prefix(dir), p))
         fetched = fetched_docs_dir(dir)
-        fetched === nothing || push!(dirs, (joinpath(fetched, "docs") * sep, p))
+        fetched === nothing || push!(dirs, (docs_prefix(fetched), p))
     end
     cat.docs_dirs = (length(cat.pkgs), dirs)
     return dirs
@@ -261,8 +263,8 @@ function autodocs_names(code::AbstractString, ctx::Module, cat::Catalog)
             e.documented && e.mod === m && (e.kind === :global ? :constant : e.kind) in order || continue
             (e.vis === :internal ? private : public) || continue
             if !isempty(pages)
-                docs = get(meta, Base.Docs.Binding(m, e.name), nothing)
-                docs isa Base.Docs.MultiDoc || continue
+                docs = get(meta, Binding(m, e.name), nothing)
+                docs isa MultiDoc || continue
                 any(d -> d isa DocStr && any(p -> endswith(as_string(string(get(d.data, :path, ""))), p), pages),
                     values(docs.docs)) || continue
             end
@@ -321,7 +323,7 @@ function unloaded_owner(cat::Catalog, path::String)
     end
     for id in cat.unloaded
         dir = unloaded_dir(id)
-        dir !== nothing && startswith(path, joinpath(dir, "docs") * Base.Filesystem.path_separator) && return id
+        dir !== nothing && startswith(path, docs_prefix(dir)) && return id
     end
     return nothing
 end

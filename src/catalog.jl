@@ -262,6 +262,9 @@ function package_deps(m::Module)
     return parse_uuids(get(package_project(dir), "deps", nothing))
 end
 
+# Load package `id` into `Main`, as `import` at the prompt does.
+import_package(id::PkgId) = Core.eval(Main, Expr(:import, Expr(:., Symbol(id.name))))
+
 function extension_parent(id::PkgId)
     parents = @lock Base.require_lock get(Base.EXT_PRIMED, id, nothing)
     return parents === nothing || isempty(parents) ? nothing : first(parents).name
@@ -522,8 +525,8 @@ function unloaded_names(cat::Catalog)
         id === nothing || id in loaded || push!(places, (id, joinpath(Sys.STDLIB, name, "docs", "src")))
     end
     for id in cat.unloaded
-        path = dynamic(Base.locate_package)(id)::Union{Nothing,String}
-        path === nothing || push!(places, (id, joinpath(dirname(dirname(path)), "docs", "src")))
+        dir = unloaded_dir(id)
+        dir === nothing || push!(places, (id, joinpath(dir, "docs", "src")))
     end
     for (id, dir) in places
         isdir(dir) || continue
@@ -576,7 +579,7 @@ function search_unloaded(cat::Catalog, query::AbstractString; limit::Int=50)
     return Tuple{String,PkgId}[(x[2], x[3]) for x in Iterators.take(scored, limit)]
 end
 
-const ROLE_BOOST = (project = 60, direct = 60, julia = 50, main = 50, stdlib = 20, indirect = 0, extension = 0)
+const ROLE_BOOST = (project = 60, direct = 60, julia = 50, main = 50, indirect = 0, extension = 0)
 const VIS_BOOST = (exported = 40, public = 30, internal = 0)
 
 """

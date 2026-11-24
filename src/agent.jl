@@ -41,6 +41,14 @@ search_hint() = CLI[] ? "search for it with `jldocs find`" : "search for it with
 # have to be precompiled first, which can take minutes.
 loads_quickly(id::PkgId) = dynamic(Base.isprecompiled)(id)::Bool
 
+# Load package `id`. The answer is then made again with `invokelatest`, by a new browser, since
+# this one's catalog was made before the package was loaded.
+function load_for_answer(id::PkgId)
+    import_package(id)
+    HEADLESS[] = nothing
+    return
+end
+
 """
     DocBrowser.lookup(query; outline=false, section=0, brief=false, width=100, context=Main, load=false) -> String
 
@@ -80,13 +88,12 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
     end
     t isa URLTarget && return "$(query) is a web page: $(t.url)\n"
     if t isa LoadTarget && (load || loads_quickly(t.id))
-        Core.eval(Main, :(import $(Symbol(t.id.name))))
-        HEADLESS[] = nothing # the catalog was made before the package was loaded
+        load_for_answer(t.id)
         return invokelatest(lookup, query; outline, section, brief, width, context)
     end
     key, k = page_key(b.cat, t)
     key === nothing && (FOUND[] = false; return "There is no page for $(repr(query)).\n")
-    push!(dynamic(get!)(Set{Symbol}, b.flags, key)::Set{Symbol}, :extended)
+    push!(page_flags!(b, key), :extended)
     p = page(b, key, width)
     io = IOBuffer()
     # the address of the page, without the file that a link to it is given with
@@ -129,11 +136,9 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
     refs, numbers = link_numbers(b, key, p, lines)
     for li in lines
         text = String(p.lines[li])
-        # the place in the margin of a block of code that copies it is not part of the text
-        spots = [s for s in p.spots if s.line == li && !(s.target isa CodeTarget)]
         # A source location shows only its file's name, or its path from `~`, which a program
         # cannot always open.
-        for s in spots
+        for s in text_spots(p, li)
             s.target isa SourceTarget || continue
             full = string(s.target.file, ':', s.target.line)
             occursin(full, text) && continue
@@ -168,10 +173,14 @@ function page_path(@nospecialize(key), p::Page)
     return nothing
 end
 
+# The links on line `li`. The place in the margin of a block of code that copies it is not one:
+# it is not part of the text.
+text_spots(p::Page, li::Int) = Spot[s for s in p.spots if s.line == li && !(s.target isa CodeTarget)]
+
 # Whether line `li` only has buttons, such as the one that loads a package, which mean nothing
 # in text. A button may have its key beside it.
 function is_button_line(p::Page, li::Int)
-    spots = [s for s in p.spots if s.line == li && !(s.target isa CodeTarget)]
+    spots = text_spots(p, li)
     isempty(spots) && return false
     all(s -> s.target isa ToggleTarget || s.target isa LoadTarget, spots) || return false
     return textwidth(strip(String(p.lines[li]))) - sum(s -> length(s.cols), spots) <= 12
@@ -396,7 +405,7 @@ end
 
 function load_project_packages(b::Browser)
     for id in b.cat.unloaded
-        @attempt Core.eval(Main, :(import $(Symbol(id.name)))) nothing
+        @attempt import_package(id)
     end
     HEADLESS[] = nothing # the catalog was made before the packages were loaded
 end
@@ -449,8 +458,7 @@ function list_names(mod::Union{Module,AbstractString}; internal::Bool=false, loa
         if t isa LoadTarget && isempty(t.then)
             load || loads_quickly(t.id) ||
                 return "$(mod) is not precompiled, so it was not loaded. To precompile and load it, $(load_hint()).\n"
-            Core.eval(Main, :(import $(Symbol(t.id.name))))
-            HEADLESS[] = nothing
+            load_for_answer(t.id)
             return invokelatest(list_names, mod; internal)
         end
         t isa ModuleTarget || (FOUND[] = false; return "$(mod) is not a module.\n")
@@ -486,7 +494,7 @@ function agent_target(cat::Catalog, query::String, ctx::Module)
     m = match(r"^(.+?\.md)(?:#(.*))?$", s)
     m !== nothing && isfile(m[1]) && return ManualTarget(normpath(m[1]), something(m[2], ""))
     parts = split(s, '.')
-    if all(p -> !isempty(p) && Base.isidentifier(p), parts[1:end-1]) && valid_name_part(parts[end])
+    if is_name_path(parts)
         roots = Module[ctx, Main, Base, Core]
         for m in values(Base.loaded_modules)
             nameof(m) === Symbol(parts[1]) && pushfirst!(roots, m)
@@ -516,15 +524,9 @@ end
 
 function name_target(root::Module, parts)
     isempty(parts) && return ModuleTarget(root)
-    m = root
-    for p in parts[1:end-1]
-        visible_binding(m, Symbol(p)) || return nothing
-        v = getglobal(m, Symbol(p))
-        v isa Module || return nothing
-        m = v
-    end
-    sym = Symbol(parts[end])
-    visible_binding(m, sym) || return nothing
+    found = find_binding(root, parts)
+    found === nothing && return nothing
+    m, sym = found
     v = getglobal(m, sym)
     return v isa Module ? ModuleTarget(v) : NameTarget(m, sym)
 end

@@ -175,6 +175,15 @@ function addflow!(pb::PageBuilder, indent::String, segs::Vector)
     return pb
 end
 
+# Add `text` as a paragraph that wraps between its words.
+function addtext!(pb::PageBuilder, indent::String, text::String, face=nothing)
+    segs = Any[]
+    for w in eachsplit(text)
+        push!(segs, (w * " ", face))
+    end
+    return addflow!(pb, indent, segs)
+end
+
 rule!(pb::PageBuilder) = addline!(pb, ("  " * "─"^max(0, pb.width - 4), :REPL_DocBrowser_border))
 
 function heading!(pb::PageBuilder, title::String)
@@ -279,8 +288,7 @@ function resolve_ref(text::AbstractString, ctx::Module, cat::Catalog)
     i === nothing || (s = s[1:prevind(s, i)])
     isempty(s) && return nothing
     parts = split(s, '.')
-    all(p -> !isempty(p) && Base.isidentifier(p), parts[1:end-1]) || return nothing
-    valid_name_part(parts[end]) || return nothing
+    is_name_path(parts) || return nothing
     for root in unique!(Module[ctx, Main, Base])
         t = resolve_path(root, parts, cat)
         t === nothing || return t
@@ -288,11 +296,17 @@ function resolve_ref(text::AbstractString, ctx::Module, cat::Catalog)
     return nothing
 end
 
+# Whether `parts` can be a name with the modules it is in before it.
+is_name_path(parts) = all(p -> !isempty(p) && Base.isidentifier(p), @view parts[1:end-1]) &&
+    valid_name_part(parts[end])
+
 visible_binding(m::Module, s::Symbol) = isdefined(m, s) && !Base.isdeprecated(m, s)
 
-function resolve_path(root::Module, parts, cat::Catalog)
+# The module that the last of `parts` is a name in, going from `root` through the modules
+# before it, and that name, or `nothing` if there is no such name.
+function find_binding(root::Module, parts)
     m = root
-    for p in parts[1:end-1]
+    for p in @view parts[1:end-1]
         sym = Symbol(p)
         visible_binding(m, sym) || return nothing
         v = getglobal(m, sym)
@@ -300,7 +314,13 @@ function resolve_path(root::Module, parts, cat::Catalog)
         m = v
     end
     sym = Symbol(parts[end])
-    visible_binding(m, sym) || return nothing
+    return visible_binding(m, sym) ? (m, sym) : nothing
+end
+
+function resolve_path(root::Module, parts, cat::Catalog)
+    found = find_binding(root, parts)
+    found === nothing && return nothing
+    m, sym = found
     v = getglobal(m, sym)
     v isa Module && return ModuleTarget(v)
     b = Binding(m, sym)
@@ -526,6 +546,15 @@ function method_target(m::Method)
     return SourceTarget(source_path(string(file)), Int(line))
 end
 
+function doc_sources(results::Vector{DocStr})
+    sources = SourceTarget[]
+    for d in results
+        t = source_target(d)
+        t === nothing || push!(sources, t)
+    end
+    return sources
+end
+
 const MAX_LISTED = 100
 
 # The Markdown of each docstring. Packages add their own ways to format docstrings.
@@ -702,7 +731,7 @@ function entry_page(cat::Catalog, e::NameEntry, width::Int, flags::Set{Symbol}=S
     elseif e.kind in (:function, :macro) && val isa Function
         add_methods!(pb, "Methods", methods(val))
     end
-    sources = SourceTarget[t for t in map(source_target, results) if t !== nothing]
+    sources = doc_sources(results)
     add_sources!(pb, unique!(sources))
     addline!(pb)
     return Page(pb, isempty(sources) ? nothing : first(sources))
@@ -1016,11 +1045,8 @@ function module_page(cat::Catalog, m::Module, width::Int)
     docs = package_docs(cat, m)
     manual = isempty(docs.pages) ? (p === nothing || ext ? nothing : package_manual(m)) : docs.pages[1].path
     if manual !== nothing
-        headings = scan_headings(manual)
-        title = isempty(headings) ? "index.md" : headings[1].text
-        n = length(docs.pages)
-        addline!(pb, "  ", ("manual ", :REPL_DocBrowser_dim), (title, nothing, ManualTarget(manual, "")),
-                 (n > 1 ? "  $n pages, listed with the names" : "", :REPL_DocBrowser_dim))
+        headings = scan_headings(manual; limit=1)
+        add_manual_line!(pb, isempty(headings) ? "index.md" : headings[1].text, manual, length(docs.pages))
     elseif p !== nothing && !ext && p.role in (:project, :direct, :indirect)
         add_fetch_line!(pb)
     end
@@ -1057,7 +1083,7 @@ function module_page(cat::Catalog, m::Module, width::Int)
         add_package_links!(pb, cat, "Loaded dependencies", loaded_deps(cat, p))
         add_package_links!(pb, cat, "Used by", dependents(cat, p))
     end
-    sources = SourceTarget[t for t in map(source_target, results) if t !== nothing]
+    sources = doc_sources(results)
     if isempty(sources)
         path = pathof(m)
         path === nothing || !isfile(path) || push!(sources, SourceTarget(path, 1))
@@ -1178,10 +1204,10 @@ function section_page(cat::Catalog, role::Symbol, width::Int)
     add_markdown!(pb, Markdown.parse(getfield(SECTION_BLURBS, role)), Base, cat)
     status = role === :manual && !any(p -> p.role === :manual, cat.manual) ? manual_status() : :none
     if status === :downloading
-        addflow!(pb, "  ", Any[(w * " ", :REPL_DocBrowser_dim) for w in
-                               split("Downloading the manual from GitHub. Its pages are listed here once it is done.")])
+        addtext!(pb, "  ", "Downloading the manual from GitHub. Its pages are listed here once it is done.",
+                 :REPL_DocBrowser_dim)
     elseif status === :failed
-        addflow!(pb, "  ", Any[w * " " for w in split("The manual could not be downloaded: $(MANUAL_ERROR[])")])
+        addtext!(pb, "  ", "The manual could not be downloaded: $(MANUAL_ERROR[])")
         addline!(pb)
         addline!(pb, "  ", ("▸ Try again", nothing, ToggleTarget(:download)))
     end
@@ -1230,6 +1256,11 @@ function section_page(cat::Catalog, role::Symbol, width::Int)
     return Page(pb)
 end
 
+# Where a package's manual starts, and how many pages it has.
+add_manual_line!(pb::PageBuilder, title::String, path::String, n::Int) =
+    addline!(pb, "  ", ("manual ", :REPL_DocBrowser_dim), (title, nothing, ManualTarget(path, "")),
+             (n > 1 ? "  $n pages, listed with the names" : "", :REPL_DocBrowser_dim))
+
 function pkg_line!(pb::PageBuilder, cat::Catalog)
     i = findfirst(p -> p.role === :pkgdocs, cat.manual)
     addline!(pb, "    ", ("Pkg", nothing, ManualTarget(cat.manual[i].path, "")))
@@ -1250,9 +1281,7 @@ function unloaded_page(cat::Catalog, id::PkgId, width::Int, then::String="")
     # Its manual, which its source has, can be read before it is loaded.
     pages = unloaded_docs(cat, id).pages
     if isempty(then) && !isempty(pages)
-        n = length(pages)
-        addline!(pb, "  ", ("manual ", :REPL_DocBrowser_dim), (pages[1].title, nothing, ManualTarget(pages[1].path, "")),
-                 (n > 1 ? "  $n pages, listed with the names" : "", :REPL_DocBrowser_dim))
+        add_manual_line!(pb, pages[1].title, pages[1].path, length(pages))
     elseif isempty(then) && !stdlib
         add_fetch_line!(pb)
     end
@@ -1260,9 +1289,8 @@ function unloaded_page(cat::Catalog, id::PkgId, width::Int, then::String="")
     what = isempty(then) ? "its docstrings are" : "the docstring of $then is"
     whose = stdlib ? "$(id.name) is a standard library" : self ? "$(id.name) is the active project" :
         "The active project depends on $(id.name)"
-    addflow!(pb, "  ", Any[w * " " for w in split(
-        "$whose, but it has not been loaded yet, so $what not available. Loading it runs " *
-        "import $(id.name) in Main.")])
+    addtext!(pb, "  ", "$whose, but it has not been loaded yet, so $what not available. Loading it runs " *
+                       "import $(id.name) in Main.")
     addline!(pb)
     addline!(pb, "  ", (" Load $(id.name) ", :REPL_DocBrowser_link_active, LoadTarget(id, then)),
              ("  or press ⏎", :REPL_DocBrowser_dim))
@@ -1289,6 +1317,7 @@ end
 
 # The README in a package's directory, if it has one.
 function find_readme(dir::String)
-    i = findfirst(f -> occursin(r"^readme(\.md)?$"i, f), readdir(dir))
-    return i === nothing ? nothing : joinpath(dir, readdir(dir)[i])
+    files = readdir(dir)
+    i = findfirst(f -> occursin(r"^readme(\.md)?$"i, f), files)
+    return i === nothing ? nothing : joinpath(dir, files[i])
 end

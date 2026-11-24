@@ -50,113 +50,105 @@ struct Snapshot
     title::String   # of the page, to say where going back or forward leads
 end
 
-mutable struct Browser
+# The state of a browser. A new one is made from its terminal and catalog alone, and every
+# other field starts as written here.
+Base.@kwdef mutable struct Browser
     term::REPL.Terminals.TextTerminal
-    in::IO
-    out::IO
+    in::IO = term.in_stream
+    out::IO = term.out_stream
     cat::Catalog
     height::Int
     width::Int
-    focus::Symbol   # the pane keys go to: :side, :names or :doc
-    source::Symbol  # the list that picks what the doc pane shows: :side or :names
-    side::ListState
-    names::ListState
-    side_rows::Vector{SideRow}
-    name_rows::Vector{NameRow}
-    expanded::Set{Symbol}
-    collapsed::Set{Symbol}
-    mod::Module
-    internal::Bool
-    query::Union{Nothing,String}
-    typing::Bool
-    results::Vector{NameEntry}
-    override::Any
-    doc_key::Any
-    doc_scroll::Int
-    mark::Int       # the line of the heading last jumped to, marked so that the jump shows
-    doc_line::Int   # the line of the page the cursor is on, or 0 for the top of the pane
-    pointer_block::Int # the first line of the block of code under the pointer, or 0
-    link::Int
-    pages::Dict{Tuple{Any,Int,Vector{Symbol}},Page}
-    back::Vector{Snapshot}
-    forward::Vector{Snapshot}
-    hits::Vector{Hit}
-    hover::Any
-    status::String
-    help::Bool
-    quit::Bool
-    result::Union{Nothing,String}
-    prev::Vector{String}
-    last_click::Tuple{Float64,Any}
-    lock::ReentrantLock
-    flags::Dict{Any,Set{Symbol}} # the parts of each page that are unfolded
-    searchmode::Symbol           # what a search looks in: :all, or only :names or :text
-    layout::Symbol               # :auto, or a number of panes: :one, :two or :three
-    color::Bool
+    focus::Symbol = :side   # the pane keys go to: :side, :names or :doc
+    source::Symbol = :side  # the list that picks what the doc pane shows: :side or :names
+    side::ListState = ListState(1, 0)
+    names::ListState = ListState(1, 0)
+    side_rows::Vector{SideRow} = SideRow[]
+    name_rows::Vector{NameRow} = NameRow[]
+    expanded::Set{Symbol} = Set(DEFAULT_EXPANDED)
+    collapsed::Set{Symbol} = Set{Symbol}()
+    mod::Module = Main
+    internal::Bool = false
+    query::Union{Nothing,String} = nothing
+    typing::Bool = false
+    results::Vector{NameEntry} = NameEntry[]
+    override::Any = nothing
+    doc_key::Any = nothing
+    doc_scroll::Int = 0
+    mark::Int = 0       # the line of the heading last jumped to, marked so that the jump shows
+    doc_line::Int = 0   # the line of the page the cursor is on, or 0 for the top of the pane
+    pointer_block::Int = 0 # the first line of the block of code under the pointer, or 0
+    link::Int = 0
+    pages::Dict{Tuple{Any,Int,Vector{Symbol}},Page} = Dict{Tuple{Any,Int,Vector{Symbol}},Page}()
+    back::Vector{Snapshot} = Snapshot[]
+    forward::Vector{Snapshot} = Snapshot[]
+    hits::Vector{Hit} = Hit[]
+    hover::Any = nothing
+    status::String = ""
+    help::Bool = false
+    quit::Bool = false
+    result::Union{Nothing,String} = nothing
+    prev::Vector{String} = String[]
+    last_click::Tuple{Float64,Any} = (0.0, nothing)
+    lock::ReentrantLock = ReentrantLock()
+    flags::Dict{Any,Set{Symbol}} = Dict{Any,Set{Symbol}}() # the parts of each page that are unfolded
+    searchmode::Symbol = :all    # what a search looks in: :all, or only :names or :text
+    layout::Symbol = LAYOUT[]    # :auto, or a number of panes: :one, :two or :three
+    color::Bool = get(out, :color, true)::Bool || REPL.Terminals.hascolor(term)
     # Text selected in the documentation, from where the drag started to where it is now,
     # each as a page line and a column.
-    sel::Union{Nothing,NTuple{4,Int}}
-    dragging::Bool
-    clicks::NTuple{4,Float64}    # time, row and column of the last press, and the click count
-    under_help::Any              # the page, scroll and link that the help covers
-    manual_hits::Vector{ManualHit} # what a search finds in the manual
-    manual_titles::Int             # how many of those are titles or headings, which come first
-    text_results::Vector{NameEntry} # what a search for everything finds only in docstrings' text
-    unloaded_hits::Vector{Tuple{String,PkgId}} # what it finds in packages that are not loaded
-    indirect::Bool               # whether a search includes indirect dependencies
-    hidden::Int                  # how many names a search found in indirect dependencies, but left out
+    sel::Union{Nothing,NTuple{4,Int}} = nothing
+    dragging::Bool = false
+    clicks::NTuple{4,Float64} = (0.0, 0.0, 0.0, 0.0) # time, row and column of the last press, and the click count
+    under_help::Any = nothing    # the page, scroll and link that the help covers
+    manual_hits::Vector{ManualHit} = ManualHit[] # what a search finds in the manual
+    manual_titles::Int = 0       # how many of those are titles or headings, which come first
+    text_results::Vector{NameEntry} = NameEntry[] # what a search for everything finds only in docstrings' text
+    unloaded_hits::Vector{Tuple{String,PkgId}} = Tuple{String,PkgId}[] # what it finds in packages that are not loaded
+    indirect::Bool = SEARCH_INDIRECT[] # whether a search includes indirect dependencies
+    hidden::Int = 0              # how many names a search found in indirect dependencies, but left out
     # The card that previews what the pointer rests on: where the pointer came to rest and when,
     # and the card's lines and what it previews once it shows.
-    hover_at::Tuple{Int,Int}
-    hover_since::Float64
-    card::Union{Nothing,Tuple{Vector{AnnotatedString{String}},Any}}
-    tips::Vector{Int}            # the tips in the order they are shown, shuffled for each browser
-    tip::Int                     # which of them the start page shows
-    live::Bool                   # whether it is on the screen, taking input
-    card_timer::Union{Nothing,Timer} # shows the card once the pointer has rested
+    hover_at::Tuple{Int,Int} = (0, 0)
+    hover_since::Float64 = Inf
+    card::Union{Nothing,Tuple{Vector{AnnotatedString{String}},Any}} = nothing
+    tips::Vector{Int} = tip_order() # the tips in the order they are shown, shuffled for each browser
+    tip::Int = 1                 # which of them the start page shows
+    live::Bool = false           # whether it is on the screen, taking input
+    card_timer::Union{Nothing,Timer} = nothing # shows the card once the pointer has rested
     # What loading a package printed, shown in a panel above the footer, and what it is doing
     # while it loads, or "". The panel stays after a failure, until the next key.
-    console::Union{Nothing,Vector{String}}
-    loading::String
-    load_task::Union{Nothing,Task}
+    console::Union{Nothing,Vector{String}} = nothing
+    loading::String = ""
+    load_task::Union{Nothing,Task} = nothing
     # Where loads are sent to run on the thread that opened the browser, while the browser
     # runs on another, or `nothing` when they run where they are started.
-    loads::Union{Nothing,Channel{Task}}
+    loads::Union{Nothing,Channel{Task}} = nothing
     # Shown over the page while a package is being loaded into the session, when the browser
     # stops responding, or "".
-    modal::String
+    modal::String = ""
     # The world that keys and drawing run in. It moves on only when a package that the browser
     # loaded is done: in the latest world, each method that loading adds makes the browser's
     # calls look up their methods again, which waits for the loading to let go of the method
     # tables, so the browser would stop responding while it loads.
-    world::UInt
+    world::UInt = Base.get_world_counter()
     # The search being typed is a readline field: `qcol` characters of it are before the
     # cursor, and `killed` is what ^W, ^K and the like took last, for ^Y to put back.
-    qcol::Int
-    killed::String
+    qcol::Int = 0
+    killed::String = ""
     # Whether the terminal is light or dark, and its background, as far as is known, and the
     # faces that go with them.
-    theme::Union{Nothing,Symbol}
-    bg::Union{Nothing,UInt32}
-    faces::Vector{Pair{Symbol,Face}}
+    theme::Union{Nothing,Symbol} = terminal_theme()
+    bg::Union{Nothing,UInt32} = nothing
+    faces::Vector{Pair{Symbol,Face}} = browser_faces(theme, bg)
     # the rows of each section of the sidebar, for the catalog and manual they were found in
-    sections::Tuple{Any,Any,Dict{Symbol,Vector{SideRow}}}
-    fetch_note::String # what is being downloaded in the background, for the footer
+    sections::Tuple{Any,Any,Dict{Symbol,Vector{SideRow}}} = (nothing, nothing, Dict{Symbol,Vector{SideRow}}())
+    fetch_note::String = "" # what is being downloaded in the background, for the footer
 end
 
 function Browser(term::REPL.Terminals.TextTerminal, cat::Catalog=Catalog())
-    h, w = displaysize(term)
-    b = Browser(term, term.in_stream, term.out_stream, cat, h, w, :side, :side,
-                ListState(1, 0), ListState(1, 0), SideRow[], NameRow[],
-                Set(DEFAULT_EXPANDED), Set{Symbol}(), Main, false, nothing, false,
-                NameEntry[], nothing, nothing, 0, 0, 0, 0, 0, Dict{Tuple{Any,Int,Vector{Symbol}},Page}(),
-                Snapshot[], Snapshot[], Hit[], nothing, "", false, false, nothing, String[],
-                (0.0, nothing), ReentrantLock(), Dict{Any,Set{Symbol}}(), :all, LAYOUT[],
-                get(term.out_stream, :color, true)::Bool || REPL.Terminals.hascolor(term),
-                nothing, false, (0.0, 0.0, 0.0, 0.0), nothing, ManualHit[], 0, NameEntry[], Tuple{String,PkgId}[], SEARCH_INDIRECT[], 0, (0, 0), Inf, nothing,
-                tip_order(), 1, false, nothing, nothing, "", nothing, nothing, "", Base.get_world_counter(),
-                0, "", terminal_theme(), nothing, browser_faces(terminal_theme(), nothing),
-                (nothing, nothing, Dict{Symbol,Vector{SideRow}}()), "")
+    height, width = displaysize(term)
+    b = Browser(; term, cat, height, width)
     any(p -> p.role in (:project, :direct), cat.pkgs) || push!(b.expanded, :indirect)
     refresh_side!(b)
     b.side.cursor = 1 # the start page
@@ -175,17 +167,15 @@ const BLOCKS = (docs = (:manual, :basedocs, :stdlibdocs, :devdocs),
 const SECTION_ORDER = (:docs, BLOCKS.docs..., :code, BLOCKS.code...)
 const MANUAL_ROLES = BLOCKS.docs
 const DEFAULT_EXPANDED = (:docs, :code, :project, :direct)
-# Whether the sidebar has anything to list in section `role`.
-const SIDEBAR_TITLES = (docs = "Julia", code = "Packages", manual = "Manual", basedocs = "Base",
-                        stdlibdocs = "Standard library", pkgdocs = "Pkg", devdocs = "Developer docs", project = "Project",
-                        direct = "Dependencies", indirect = "Indirect", julia = "Core and Base",
-                        extension = "Extensions")
+# The sidebar is narrow, so some of its titles are shorter than those of the sections' pages.
+const SIDEBAR_TITLES = merge(SECTION_TITLES, (pkgdocs = "Pkg", devdocs = "Developer docs", indirect = "Indirect"))
 
 is_block(role::Symbol) = role === :docs || role === :code
 
 # Pkg's manual is one row of the sidebar, which stands for all its pages. It shows the first.
 pkg_pages(b::Browser) = filter(p -> p.role === :pkgdocs, b.cat.manual)
 
+# Whether the sidebar has anything to list in section `role`.
 function has_section(b::Browser, role::Symbol)
     role === :manual && manual_status() !== :none && return true
     return !isempty(section_rows(b, role))
@@ -486,6 +476,10 @@ end
 names_offset(b::Browser) = !isempty(b.name_rows) && b.name_rows[1].kind === :about ? 1 : 0
 list_offset(b::Browser, pane::Symbol) = pane === :names ? names_offset(b) : 0
 
+# The cursor and scroll of the list in `pane`, the sidebar or the names, and how many rows it has.
+list_state(b::Browser, pane::Symbol) = pane === :side ? b.side : b.names
+list_length(b::Browser, pane::Symbol) = pane === :side ? length(b.side_rows) : length(b.name_rows)
+
 ## Navigation ##
 
 snapshot(b::Browser) = Snapshot(b.mod, b.focus, b.source, row_key(side_row(b)), row_key(name_row(b)),
@@ -604,7 +598,7 @@ end
 
 function follow!(b::Browser, t::Target)
     if t isa AnchorTarget
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         t.heading in eachindex(p.headings) || return
         b.doc_scroll = p.headings[t.heading] - 1
         b.mark = p.headings[t.heading]
@@ -777,7 +771,7 @@ function load_package!(b::Browser, id::PkgId; then::String="")
             b.modal = what[] * "…"
             b.live && in_world(draw, b)
         end
-        Core.eval(Main, Expr(:import, Expr(:., Symbol(id.name))))
+        import_package(id)
     end
     function done(ok)
         ok || return
@@ -882,10 +876,7 @@ function show_loaded!(b::Browser, id::PkgId, go::Bool=true)
     b.status = "Loaded " * id.name
 end
 
-function page_source(b::Browser)
-    key = current_key(b)
-    return page(b, key, doc_width(b)).source
-end
+page_source(b::Browser) = current_page(b).source
 
 """
     source_of(b, x) -> Union{SourceTarget, Nothing}
@@ -923,7 +914,7 @@ function hit_subject(b::Browser, action)
     action isa Tuple || return nothing
     kind = first(action)::Symbol
     if kind === :spot
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         k = action[2]::Int
         return k in eachindex(p.spots) ? p.spots[k].target : nothing
     elseif kind === :side
@@ -955,11 +946,11 @@ end
 # The selected link, or else the selected row of the focused list.
 function selected_subject(b::Browser)
     if b.focus === :doc
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         b.link in eachindex(p.spots) && return p.spots[b.link].target
         return nothing
     end
-    return hit_subject(b, (b.focus, b.focus === :side ? b.side.cursor : b.names.cursor))
+    return hit_subject(b, (b.focus, list_state(b, b.focus).cursor))
 end
 
 function edit_subject!(b::Browser, x)
@@ -977,7 +968,7 @@ end
 
 # What the ⧉ of the block of code that line `li` of the page is in copies, or `nothing`.
 function code_at(b::Browser, li::Int)
-    p = page(b, current_key(b), doc_width(b))
+    p = current_page(b)
     i = copy_spot(p, code_block_start(p, li))
     return i === nothing ? nothing : p.spots[i].target::CodeTarget
 end
@@ -1032,6 +1023,8 @@ function doc_width(b::Browser)
 end
 
 page_flags(b::Browser, key) = dynamic(get)(b.flags, key, Set{Symbol}())::Set{Symbol}
+# The same set, kept for the page, so that changes to it stay.
+page_flags!(b::Browser, @nospecialize(key)) = dynamic(get!)(Set{Symbol}, b.flags, key)::Set{Symbol}
 
 function page(b::Browser, key, width::Int)
     flags = page_flags(b, key)
@@ -1057,6 +1050,9 @@ function page(b::Browser, key, width::Int)
     end
     return p::Page
 end
+
+# The page that the documentation pane shows.
+current_page(b::Browser) = page(b, current_key(b), doc_width(b))
 
 ## Drawing ##
 
@@ -1143,7 +1139,7 @@ function hint_segments(b::Browser)
         return [("↑↓", "choose"), ("⏎", "open"), ("^T", NEXT_MODE_LABEL[b.searchmode]),
                 ("^A", b.indirect ? "direct only" : "+indirect"), ("⇥", "results"), ("esc", "cancel")]
     elseif b.focus === :doc
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         # On code, what can be done with it comes first, as its ⧉ says little by itself.
         code = code_at(b, b.doc_line)
         oncode = code !== nothing
@@ -1181,7 +1177,7 @@ function describe(b::Browser, action)
     action isa Tuple || return nothing
     kind = first(action)::Symbol
     if kind === :spot
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         k = action[2]::Int
         k in eachindex(p.spots) || return nothing
         return describe_target(b, p, p.spots[k].target)
@@ -1449,8 +1445,7 @@ function module_path(m::Module)
 end
 
 function list_line(b::Browser, pane::Symbol, i::Int, x::Int, w::Int, row::Int)
-    rows = pane === :side ? b.side_rows : b.name_rows
-    i > length(rows) && return fit("", w)
+    i > list_length(b, pane) && return fit("", w)
     rb = RowBuilder(b, row, x)
     action = (pane, i)
     first_hit = length(b.hits) + 1
@@ -1536,9 +1531,7 @@ function list_line(b::Browser, pane::Symbol, i::Int, x::Int, w::Int, row::Int)
             t = r.target::LoadTarget
             put_seg!(rb, "   ")
             put_match!(rb, String(chop(t.then; head=length(t.id.name) + 1, tail=0)), nothing, action)
-            where = " " * t.id.name
-            room = w - width(rb) - 1
-            room > 4 && put_seg!(rb, ' '^max(1, room - textwidth(where)) * first(where, room), :REPL_DocBrowser_dim)
+            put_right!(rb, w, " " * t.id.name)
         elseif r.kind === :hit
             # a section of the manual with its page on the right, or a page with its part of the docs
             h = r.hit::ManualHit
@@ -1547,13 +1540,7 @@ function list_line(b::Browser, pane::Symbol, i::Int, x::Int, w::Int, row::Int)
             k = manual_page_of(b.cat, h.path)
             where = !isempty(h.heading) ? " " * manual_title(b.cat, h.path) :
                 k === nothing ? "" : " " * getfield(SIDEBAR_TITLES, b.cat.manual[k].role)
-            if !isempty(where)
-                room = w - width(rb) - 1
-                if room > 4
-                    put_seg!(rb, ' '^max(1, room - textwidth(where)))
-                    put_seg!(rb, textwidth(where) > room ? first(where, room) : where, :REPL_DocBrowser_dim)
-                end
-            end
+            isempty(where) || put_right!(rb, w, where)
         elseif r.kind === :header
             title = r.group === :manual_hits ? "In the manual" : r.group === :name_hits ? "Names" :
                 r.group === :text_hits ? "In docstrings" : kind_title(r.group)
@@ -1586,12 +1573,7 @@ function list_line(b::Browser, pane::Symbol, i::Int, x::Int, w::Int, row::Int)
                     put_seg!(rb, where, :REPL_DocBrowser_dim)
                 end
             elseif b.query !== nothing && !is_module_entry(e)
-                where = " " * display_name(e.mod)
-                room = w - width(rb) - 1
-                if room > 4
-                    put_seg!(rb, ' '^max(1, room - textwidth(where)))
-                    put_seg!(rb, textwidth(where) > room ? first(where, room) : where, :REPL_DocBrowser_dim)
-                end
+                put_right!(rb, w, " " * display_name(e.mod))
             end
         end
     end
@@ -1601,7 +1583,7 @@ function list_line(b::Browser, pane::Symbol, i::Int, x::Int, w::Int, row::Int)
         h = b.hits[k]
         b.hits[k] = Hit(h.row, max(first(h.cols), x):min(last(h.cols), x + w - 1), h.action)
     end
-    if i == (pane === :side ? b.side.cursor : b.names.cursor)
+    if i == list_state(b, pane).cursor
         if b.focus === pane
             face!(line, :REPL_DocBrowser_selected)
         elseif b.source === pane || pane === :side
@@ -1613,6 +1595,14 @@ function list_line(b::Browser, pane::Symbol, i::Int, x::Int, w::Int, row::Int)
         end
     end
     return line
+end
+
+# Put `where` at the right of a row `w` columns wide, dimmed, or the start of it that fits.
+function put_right!(rb::RowBuilder, w::Int, where::String)
+    room = w - width(rb) - 1
+    room > 4 || return rb
+    put_seg!(rb, ' '^max(1, room - textwidth(where)))
+    return put_seg!(rb, textwidth(where) > room ? first(where, room) : where, :REPL_DocBrowser_dim)
 end
 
 # The package that a name of another package comes from, for a re-export. Base does not count
@@ -1648,9 +1638,9 @@ function draw_list(b::Browser, pane::Symbol, x::Int, w::Int)
         end
         return lines
     end
-    ls = pane === :side ? b.side : b.names
+    ls = list_state(b, pane)
     offset = list_offset(b, pane)
-    len = (pane === :side ? length(b.side_rows) : length(b.name_rows)) - offset
+    len = list_length(b, pane) - offset
     m = list_rows(b, pane)
     ls.scroll = clamp(ls.scroll, 0, max(0, len - m))
     for k in 1:m
@@ -1910,9 +1900,15 @@ function check_size!(b::Browser)
     h, w = displaysize(b.term)
     (h, w) == (b.height, b.width) && return false
     b.height, b.width = h, w
+    clear_screen!(b)
+    return true
+end
+
+# Clear the screen, so that the next frame draws every row.
+function clear_screen!(b::Browser)
     put(b, "\e[H\e[2J")
     b.prev = String[]
-    return true
+    return
 end
 
 ## The preview card ##
@@ -1927,7 +1923,7 @@ function card_subject(b::Browser, @nospecialize(action))
     action isa Tuple || return nothing
     kind = first(action)::Symbol
     if kind === :spot
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         k = action[2]::Int
         k in eachindex(p.spots) || return nothing
         t = p.spots[k].target
@@ -1977,7 +1973,7 @@ end
 
 function card_content(b::Browser, @nospecialize(subject))
     if subject isa NameEntry || subject isa NameTarget
-        m, s = subject isa NameEntry ? (subject.mod, subject.name) : (subject.mod, subject.name)
+        m, s = subject.mod::Module, subject.name::Symbol
         e = subject isa NameEntry ? subject : @attempt(classify(b.cat, m, s))
         kind = e === nothing ? "" : String(e.kind)
         return string(display_name(m), '.', s), kind, docstring_start(doc_results(Binding(m, s)))
@@ -2229,7 +2225,7 @@ The selected text, without the indentation that the page adds to every line.
 function selection_text(b::Browser)
     b.sel === nothing && return ""
     l1, c1, l2, c2 = ordered_selection(b.sel)
-    p = page(b, current_key(b), doc_width(b))
+    p = current_page(b)
     lines = String[]
     for li in l1:min(l2, length(p.lines))
         cols = selected_cols(b, li)::UnitRange{Int}
@@ -2330,7 +2326,7 @@ function press_doc!(b::Browser, row::Int, col::Int)
     b.clicks = (now, row, col, n)
     b.focus = :doc
     li, col = pt
-    p = page(b, current_key(b), doc_width(b))
+    p = current_page(b)
     b.doc_line = li
     b.link in eachindex(p.spots) && p.spots[b.link].line == li || (b.link = line_link(p, li))
     text = li <= length(p.lines) ? String(p.lines[li]) : ""
@@ -2369,8 +2365,8 @@ end
 ## Events ##
 
 function move!(b::Browser, pane::Symbol, delta::Int)
-    ls = pane === :side ? b.side : b.names
-    len = pane === :side ? length(b.side_rows) : length(b.name_rows)
+    ls = list_state(b, pane)
+    len = list_length(b, pane)
     len == 0 && return
     ls.cursor = clamp(ls.cursor + delta, 1, len)
     reveal!(ls, list_rows(b, pane), list_offset(b, pane))
@@ -2454,7 +2450,7 @@ end
 # screen, but never closer than a few lines to the top or bottom, so what is around it shows.
 # Where the page cannot scroll further, the cursor moves on the screen instead.
 function step_doc!(b::Browser, delta::Int)
-    p = page(b, current_key(b), doc_width(b))
+    p = current_page(b)
     n = content_rows(b)
     from = max(b.doc_line, b.doc_scroll + 1)
     line = clamp(from + delta, 1, max(1, length(p.lines)))
@@ -2470,7 +2466,7 @@ function step_doc!(b::Browser, delta::Int)
 end
 
 function cycle_link!(b::Browser, dir::Int)
-    p = page(b, current_key(b), doc_width(b))
+    p = current_page(b)
     # Blocks of code are not stops: the cursor on one is enough to copy it.
     links = [i for (i, s) in enumerate(p.spots) if !(s.target isa CodeTarget)]
     isempty(links) && return (b.status = "No links on this page"; nothing)
@@ -2602,7 +2598,7 @@ end
 function toggle_flag!(b::Browser, flag::Symbol)
     key = current_key(b)
     key isa NameEntry || return
-    flags = dynamic(get!)(Set{Symbol}, b.flags, key)::Set{Symbol}
+    flags = page_flags!(b, key)
     flag in flags ? delete!(flags, flag) : push!(flags, flag)
 end
 
@@ -2625,7 +2621,7 @@ function toggle_textsearch!(b::Browser)
 end
 
 function jump_heading!(b::Browser, dir::Int)
-    p = page(b, current_key(b), doc_width(b))
+    p = current_page(b)
     # From the marked heading, which can be below the top near the end of a page.
     at = b.mark > 0 ? b.mark : b.doc_scroll + 1
     hs = dir > 0 ? filter(>(at), p.headings) : filter(<(at), p.headings)
@@ -2708,13 +2704,13 @@ end
 
 # The browser's own keys come first, and the rest edit the query.
 function handle_typing!(b::Browser, ev::KeyEvent)
-    if ev.key === :char && ev.mods == CTRL && ev.char == 't'
+    if isctrl(ev, 't')
         toggle_textsearch!(b)
-    elseif ev.key === :char && ev.mods == CTRL && ev.char == 'a'
+    elseif isctrl(ev, 'a')
         toggle_indirect!(b)
-    elseif ev.key === :up || (ev.key === :char && ev.mods == CTRL && ev.char == 'p')
+    elseif ev.key === :up || isctrl(ev, 'p')
         move!(b, :names, -1)
-    elseif ev.key === :down || (ev.key === :char && ev.mods == CTRL && ev.char == 'n')
+    elseif ev.key === :down || isctrl(ev, 'n')
         move!(b, :names, 1)
     elseif ev.key in (:pageup, :pagedown)
         move!(b, :names, (ev.key === :pageup ? -1 : 1) * content_rows(b))
@@ -2737,7 +2733,7 @@ function handle_typing!(b::Browser, ev::KeyEvent)
     elseif ev.key === :tab || ev.key === :right && ev.mods == 0 && b.qcol >= length(b.query)
         # past the end of the query, on to the results
         b.typing = false
-    elseif ev.key === :escape || (ev.key === :char && ev.mods == CTRL && ev.char in ('c', 'g'))
+    elseif ev.key === :escape || isctrl(ev, 'c') || isctrl(ev, 'g')
         close_search!(b)
     else
         edit_query!(b, ev)
@@ -2747,6 +2743,7 @@ end
 
 isplain(ev::KeyEvent, c::Char) = ev.key === :char && ev.char == c && ev.mods & (CTRL | ALT) == 0
 isctrl(ev::KeyEvent, c::Char) = ev.key === :char && ev.char == c && ev.mods == CTRL
+isalt(ev::KeyEvent, c::Char) = ev.key === :char && ev.char == c && ev.mods == ALT
 
 function handle!(b::Browser, ev::KeyEvent)
     # The panel left by a failed load goes with the next key.
@@ -2790,7 +2787,7 @@ function handle!(b::Browser, ev::KeyEvent)
         pane === :doc ? step_doc!(b, -1) : move!(b, pane, -1)
     elseif ev.key === :down || isplain(ev, 'j') || isctrl(ev, 'n')
         pane === :doc ? step_doc!(b, 1) : move!(b, pane, 1)
-    elseif ev.key === :pageup || isctrl(ev, 'b') || (ev.key === :char && ev.char == 'v' && ev.mods == ALT)
+    elseif ev.key === :pageup || isctrl(ev, 'b') || isalt(ev, 'v')
         pane === :doc ? step_doc!(b, -(n - 2)) : move!(b, pane, -n)
     elseif ev.key === :pagedown || isplain(ev, ' ') || isctrl(ev, 'v')
         pane === :doc ? step_doc!(b, n - 2) : move!(b, pane, n)
@@ -2798,13 +2795,9 @@ function handle!(b::Browser, ev::KeyEvent)
         pane === :doc ? step_doc!(b, -typemax(Int) ÷ 2) : move!(b, pane, -typemax(Int) ÷ 2)
     elseif ev.key === :end || isplain(ev, 'G')
         pane === :doc ? step_doc!(b, typemax(Int) ÷ 2) : move!(b, pane, typemax(Int) ÷ 2)
-    elseif ev.key === :left && ev.mods & ALT != 0 || isplain(ev, '[')
+    elseif ev.key === :left && ev.mods & ALT != 0 || isplain(ev, '[') || isalt(ev, 'b')
         go_back!(b)
-    elseif ev.key === :right && ev.mods & ALT != 0 || isplain(ev, ']')
-        go_forward!(b)
-    elseif ev.key === :char && ev.mods == ALT && ev.char == 'b'
-        go_back!(b)
-    elseif ev.key === :char && ev.mods == ALT && ev.char == 'f'
+    elseif ev.key === :right && ev.mods & ALT != 0 || isplain(ev, ']') || isalt(ev, 'f')
         go_forward!(b)
     elseif ev.key === :left || isplain(ev, 'h')
         focus_left!(b)
@@ -2839,8 +2832,7 @@ function handle!(b::Browser, ev::KeyEvent)
         b.layout = LAYOUTS[mod1(findfirst(==(b.layout), LAYOUTS) + 1, length(LAYOUTS))]
         LAYOUT[] = b.layout
         b.status = b.layout === :auto ? "Layout: fit the window" : "Layout: $(b.layout) pane" * (b.layout === :one ? "" : "s")
-        put(b, "\e[H\e[2J")
-        b.prev = String[]
+        clear_screen!(b)
     elseif isplain(ev, 'i')
         b.internal = !b.internal
         b.query === nothing ? refresh_names!(b) : update_search!(b)
@@ -2850,7 +2842,7 @@ function handle!(b::Browser, ev::KeyEvent)
         src = x === nothing ? page_source(b) : source_of(b, x)
         src === nothing ? (b.status = "No source location for that") : edit_source!(b, src)
     elseif isplain(ev, 'o')
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         if b.link in eachindex(p.spots) && p.spots[b.link].target isa URLTarget
             open_url(b, p.spots[b.link].target.url)
         else
@@ -2872,8 +2864,7 @@ function handle!(b::Browser, ev::KeyEvent)
         b.expanded = all_open ? Set(DEFAULT_EXPANDED) : Set(SECTION_ORDER)
         refresh_side!(b)
     elseif isctrl(ev, 'l')
-        put(b, "\e[H\e[2J")
-        b.prev = String[]
+        clear_screen!(b)
     else
         return false
     end
@@ -3022,7 +3013,7 @@ function handle!(b::Browser, ev::MouseEvent)
         end
         hover = h === nothing ? nothing : h.action
         pt = doc_point(b, ev.row, ev.col)
-        block = pt === nothing ? 0 : code_block_start(page(b, current_key(b), doc_width(b)), pt[1])
+        block = pt === nothing ? 0 : code_block_start(current_page(b), pt[1])
         moved = block != b.pointer_block
         b.pointer_block = block
         # Moving onto the card keeps it, and what it previews.
@@ -3041,8 +3032,8 @@ function handle!(b::Browser, ev::MouseEvent)
         if pane === :doc
             scroll_doc!(b, delta)
         else
-            ls = pane === :side ? b.side : b.names
-            len = pane === :side ? length(b.side_rows) : length(b.name_rows)
+            ls = list_state(b, pane)
+            len = list_length(b, pane)
             len -= list_offset(b, pane)
             ls.scroll = clamp(ls.scroll + delta, 0, max(0, len - list_rows(b, pane)))
         end
@@ -3094,7 +3085,7 @@ function click!(b::Browser, h::Hit, double::Bool)
     if kind in (:side, :names)
         pane, i = a::Tuple{Symbol,Int}
         b.help = false
-        ls = pane === :side ? b.side : b.names
+        ls = list_state(b, pane)
         again = b.focus === pane && ls.cursor == i
         ls.cursor = i
         b.focus = pane
@@ -3107,14 +3098,14 @@ function click!(b::Browser, h::Hit, double::Bool)
     elseif kind === :section
         follow!(b, SectionTarget(a[2]))
     elseif kind === :spot
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         _, k = a
         k in eachindex(p.spots) || return false
         # A link in the help leaves the help, for the page underneath.
         b.help ? (b.help = false) : (b.link = k)
         follow!(b, p.spots[k].target)
     elseif kind === :scrollbar
-        p = page(b, current_key(b), doc_width(b))
+        p = current_page(b)
         b.doc_scroll = round(Int, a[2] * max(0, length(p.lines) - content_rows(b)))
     elseif kind === :crumb
         m = a[2]
@@ -3397,7 +3388,6 @@ function fetch_docs!(b::Browser)
             "Could not download $(id.name)'s manual: " * first_line(err) *
                 " · DocBrowser.explain_docs(\"$(id.name)\"; online=true) says more"
         end
-        b.cat.manuals = nothing
         manuals_changed!(b; status=msg)
     end)
     return
@@ -3407,6 +3397,7 @@ end
 function manuals_changed!(b::Browser; status::Union{Nothing,String}=nothing, note::Union{Nothing,String}=nothing)
     @lock b.lock begin
         empty!(b.cat.pkgdocs)
+        b.cat.manuals = nothing
         b.cat.docs_dirs = (0, Tuple{String,PkgEntry}[])
         empty!(b.pages)
         refresh_side!(b)

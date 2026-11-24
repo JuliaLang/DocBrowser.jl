@@ -238,8 +238,8 @@ function page_headings(cat::Catalog, path::String)
             @nospecialize x # so that this is not compiled again for each level of heading
             x isa Markdown.Header || return
             text, id = x.text, ""
-            link = length(text) == 1 ? text[1] : nothing
-            if link isa Markdown.Link && startswith(link.url, "@id")
+            link = id_link(x)
+            if link !== nothing
                 id = String(strip(chopprefix(link.url, "@id")))
                 text = link.text
             end
@@ -251,6 +251,12 @@ function page_headings(cat::Catalog, path::String)
 end
 
 heading_level(::Markdown.Header{l}) where {l} = l
+
+# The link that is the whole of a heading and gives it an `@id`, or `nothing`.
+function id_link(@nospecialize(h::Markdown.Header))
+    link = length(h.text) == 1 ? h.text[1] : nothing
+    return link isa Markdown.Link && startswith(link.url, "@id") ? link : nothing
+end
 
 # The place among a page's shown headings of the heading with this text, or 0.
 function heading_index(cat::Catalog, path::String, text::AbstractString)
@@ -378,21 +384,13 @@ function documenter_blocks(blocks::Vector, ctx::Module=Main, cat::Union{Nothing,
             if lang in ("@example", "@repl")
                 push!(out, Markdown.Code("julia", x.code))
             elseif lang == "@autodocs" && cat !== nothing
-                names = autodocs_names(x.code, ctx, cat)
-                isempty(names) || push!(out, Markdown.List(Any[Any[Markdown.Paragraph(Any[Markdown.Code(n)])] for n in names], -1, false))
+                push_names!(out, autodocs_names(x.code, ctx, cat))
             elseif lang == "@docs"
-                items = Any[]
-                for line in split(x.code, '\n')
-                    name = strip(line)
-                    isempty(name) || push!(items, Any[Markdown.Paragraph(Any[Markdown.Code(String(name))])])
-                end
-                isempty(items) || push!(out, Markdown.List(items, -1, false))
+                push_names!(out, split(x.code, '\n'))
             end
         elseif x isa Markdown.Header
-            link = length(x.text) == 1 ? x.text[1] : nothing
-            if link isa Markdown.Link && startswith(link.url, "@id")
-                x.text = link.text
-            end
+            link = id_link(x)
+            link === nothing || (x.text = link.text)
             push!(out, x)
         elseif x isa Markdown.Admonition
             x.content = documenter_blocks(x.content, ctx, cat)
@@ -404,6 +402,17 @@ function documenter_blocks(blocks::Vector, ctx::Module=Main, cat::Union{Nothing,
     return out
 end
 
+# The names as a list of code, which become links. Blank names are left out.
+function push_names!(out::Vector{Any}, names)
+    items = Any[]
+    for n in names
+        name = strip(n)
+        isempty(name) || push!(items, Any[Markdown.Paragraph(Any[Markdown.Code(String(name))])])
+    end
+    isempty(items) || push!(out, Markdown.List(items, -1, false))
+    return out
+end
+
 function manual_link(link::Markdown.Link, path::String, ctx::Module, cat::Catalog)
     url = link.url
     if startswith(url, "@ref")
@@ -412,10 +421,12 @@ function manual_link(link::Markdown.Link, path::String, ctx::Module, cat::Catalo
         # As in Documenter, a link written as code names a docstring, and one in words a heading.
         code = length(link.text) == 1 && link.text[1] isa Markdown.Code
         anchors = manual_anchors(cat)
-        page = code ? nothing : something(get(anchors, key, nothing), get(anchors, slugify(key), nothing), Some(nothing))
+        heading_page() = something(get(anchors, key, nothing), get(anchors, slugify(key), nothing), Some(nothing))
+        page = code ? nothing : heading_page()
         page === nothing || return manual_url(page, key)
         resolve_ref(strip(key, '`'), ctx, cat) === nothing || return url
-        page = something(get(anchors, key, nothing), get(anchors, slugify(key), nothing), Some(nothing))
+        # Code that names no docstring can still name a heading.
+        page = code ? heading_page() : nothing
         page === nothing || return manual_url(page, key)
         return anchor_heading(cat, path, key) == 0 ? url : manual_url(path, key)
     end
@@ -456,8 +467,8 @@ function manual_page(cat::Catalog, path::String, width::Int)
     if source !== nothing
         commit = first(julia_ref(), 10)
         from = startswith(source, "v") ? source : "the $source branch"
-        note = "This Julia was built from $commit, which is not on GitHub, so this page is from $from."
-        addflow!(pb, "  ", Any[(w * " ", :REPL_DocBrowser_dim) for w in split(note)])
+        addtext!(pb, "  ", "This Julia was built from $commit, which is not on GitHub, so this page is from $from.",
+                 :REPL_DocBrowser_dim)
         addline!(pb)
     end
     md = Markdown.parse(read(path, String))
@@ -548,8 +559,9 @@ hit_heading(cat::Catalog, h::ManualHit) = heading_index(cat, h.path, h.heading)
 
 # The line of the file that a hit's heading is on.
 function hit_line(cat::Catalog, h::ManualHit)
-    i = findfirst(x -> x.text == h.heading, index_headings(cat, h.path))
-    return i === nothing ? 1 : index_headings(cat, h.path)[i].line
+    hs = index_headings(cat, h.path)
+    i = findfirst(x -> x.text == h.heading, hs)
+    return i === nothing ? 1 : hs[i].line
 end
 
 # The scanned headings of a page, kept for searching.

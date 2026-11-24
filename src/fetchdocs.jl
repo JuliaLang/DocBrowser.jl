@@ -132,6 +132,17 @@ function fetch_package_docs(id::PkgId, dir::String)
     error(r === nothing ? "nothing was downloaded" : string(get(r, "none", get(r, "reason", "nothing was downloaded"))))
 end
 
+# The record of a package that cannot have a manual to download. The installed version never will.
+no_manual(why::String) = Dict{String,Any}("none" => why)
+# The record of a search for a manual that failed. It is tried again after a day.
+failed(why::String) = Dict{String,Any}("failed" => round(Int, time()), "reason" => why)
+
+# The owner and name of the GitHub repository at `url`, or `nothing` if it is elsewhere.
+function github_repo(url::AbstractString)
+    m = match(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$", url)
+    return m === nothing ? nothing : (String(m[1]), String(m[2]))
+end
+
 # A package whose manual is being looked for.
 struct Wanted
     id::PkgId
@@ -154,7 +165,6 @@ function fetch_manuals(pkgs::Vector{Tuple{PkgId,String}}; start=names -> nothing
     isempty(pkgs) && return 0
     pkg = dynamic(Base.require_stdlib)(PKG)
     new = Dict{String,Dict{String,Any}}()
-    failed(dir, why) = (new[record_key(dir)] = Dict{String,Any}("failed" => round(Int, time()), "reason" => why))
     # Where each package comes from. A package at the top of its repository, or elsewhere than
     # GitHub, cannot have a manual to download, which stays so for the installed version. The
     # repositories are taken in the order of the packages, which come most wanted first.
@@ -162,18 +172,17 @@ function fetch_manuals(pkgs::Vector{Tuple{PkgId,String}}; start=names -> nothing
     for (id, dir) in pkgs
         place = @attempt registry_place(pkg, id) nothing
         if place === nothing
-            new[record_key(dir)] = Dict{String,Any}("none" => "$(id.name) is not in any registry")
+            new[record_key(dir)] = no_manual("$(id.name) is not in any registry")
             continue
         end
         url, subdir = place::Tuple{String,String}
-        m = match(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$", url)
-        if m === nothing || isempty(subdir)
-            new[record_key(dir)] = Dict{String,Any}("none" => m === nothing ?
+        key = github_repo(url)
+        if key === nothing || isempty(subdir)
+            new[record_key(dir)] = no_manual(key === nothing ?
                 "only manuals in GitHub repositories can be downloaded, and $(id.name)'s is at $url" :
                 "$(id.name) is at the top of its repository, so its manual would be installed with it")
             continue
         end
-        key = (String(m[1]), String(m[2]))
         i = findfirst(g -> g.first == key, groups)
         i === nothing && (push!(groups, key => Wanted[]); i = length(groups))
         push!(groups[i].second, Wanted(id, dir, key[1], key[2], subdir))
@@ -192,7 +201,7 @@ function fetch_manuals(pkgs::Vector{Tuple{PkgId,String}}; start=names -> nothing
         # the rest are tried again another day, rather than each failing on its own
         why = first_line(err)
         for (_, wanted) in groups, w in wanted
-            haskey(new, record_key(w.dir)) || failed(w.dir, why)
+            haskey(new, record_key(w.dir)) || (new[record_key(w.dir)] = failed(why))
         end
     finally
         isempty(new) || save_records!(new)
@@ -202,6 +211,41 @@ end
 
 # Find the releases of the packages of one repository, and download the manuals they use.
 function fetch_group!(new, pkg::Module, owner::String, repo::String, wanted::Vector{Wanted})
+    found, _ = find_releases(pkg, owner, repo, wanted)
+    got = 0
+    trees = Dict{Tuple{String,String},Union{Nothing,String}}() # (ref, docs) => tree hash
+    for w in wanted
+        ref = get(found, w.dir, nothing)
+        if ref === nothing
+            new[record_key(w.dir)] =
+                failed("no release of $owner/$repo that was looked at has $(w.id.name) as installed")
+            continue
+        end
+        # The manual is in `docs` at the top of the repository, unless the package says where.
+        source = docs_source(w.dir)
+        src = source === nothing ? "docs/src" : normpath(joinpath(w.subdir, source))
+        if startswith(src, "..")
+            new[record_key(w.dir)] = no_manual("$(w.id.name) names a manual outside its repository")
+            continue
+        end
+        docs = dirname(src)
+        sha = get!(trees, (ref, docs)) do
+            download_tree(owner, repo, ref, docs, relpath(src, docs))
+        end
+        if sha === nothing
+            # which stays so for the installed version
+            new[record_key(w.dir)] = no_manual("$owner/$repo has no manual at $src in $ref")
+        else
+            new[record_key(w.dir)] = Dict{String,Any}("tree" => sha, "source" => "$owner/$repo $ref $docs")
+            got += 1
+        end
+    end
+    return got
+end
+
+# The release of each of the packages `wanted` of one repository that has one, by the package's
+# directory, and the tree hash of each directory as installed.
+function find_releases(pkg::Module, owner::String, repo::String, wanted::Vector{Wanted})
     hashes = Dict{String,String}(w.dir => bytes2hex(Base.invokelatest(pkg.GitTools.tree_hash, w.dir)::Vector{UInt8})
                                  for w in wanted)
     found = Dict{String,String}() # dir => ref
@@ -212,35 +256,7 @@ function fetch_group!(new, pkg::Module, owner::String, repo::String, wanted::Vec
         rest = Wanted[w for w in wanted if !haskey(found, w.dir)]
         find_releases!(found, owner, repo, wanted, hashes, listed_refs(owner, repo, rest))
     end
-    got = 0
-    trees = Dict{Tuple{String,String},Union{Nothing,String}}() # (ref, docs) => tree hash
-    for w in wanted
-        ref = get(found, w.dir, nothing)
-        if ref === nothing
-            new[record_key(w.dir)] = Dict{String,Any}("failed" => round(Int, time()),
-                "reason" => "no release of $owner/$repo that was looked at has $(w.id.name) as installed")
-            continue
-        end
-        # The manual is in `docs` at the top of the repository, unless the package says where.
-        source = docs_source(w.dir)
-        src = source === nothing ? "docs/src" : normpath(joinpath(w.subdir, source))
-        if startswith(src, "..")
-            new[record_key(w.dir)] = Dict{String,Any}("none" => "$(w.id.name) names a manual outside its repository")
-            continue
-        end
-        docs = dirname(src)
-        sha = get!(trees, (ref, docs)) do
-            download_tree(owner, repo, ref, docs, relpath(src, docs))
-        end
-        if sha === nothing
-            # which stays so for the installed version
-            new[record_key(w.dir)] = Dict{String,Any}("none" => "$owner/$repo has no manual at $src in $ref")
-        else
-            new[record_key(w.dir)] = Dict{String,Any}("tree" => sha, "source" => "$owner/$repo $ref $docs")
-            got += 1
-        end
-    end
-    return got
+    return found, hashes
 end
 
 # Look among `refs` for the release of each package not found yet: the one at which its
@@ -308,7 +324,7 @@ function raw_file(owner::String, repo::String, ref::String, path::String)
     url = "https://raw.githubusercontent.com/$owner/$repo/$ref/$path"
     @lock API_LOCK haskey(RAW_FILES, url) && return RAW_FILES[url]
     text = try
-        String(take!(download_url(url, IOBuffer())::IOBuffer))
+        download_text(url)
     catch err
         is_not_found(err) || rethrow()
         nothing
@@ -330,18 +346,12 @@ function download_tree(owner::String, repo::String, ref::String, docs::String, s
     files = String[String(m[1]) for m in eachmatch(r"\"path\":\s*\"([^\"]+)\",\s*\"mode\":\s*\"\d+\",\s*\"type\":\s*\"blob\"", tree)]
     filter!(f -> startswith(f, src * "/") && endswith(f, ".md") || !occursin('/', f) && endswith(f, ".jl"), files)
     isempty(files) && return nothing
-    target = tree_dir(first(DEPOT_PATH), sha)
-    tmp = mktempdir(mkpath(dirname(target)))
-    try
+    install_dir(tree_dir(first(DEPOT_PATH), sha)) do tmp
         asyncmap(files; ntasks=16) do f
             path = joinpath(tmp, "docs", f)
             mkpath(dirname(path))
             download_url("https://raw.githubusercontent.com/$owner/$repo/$ref/$docs/$f", path)
         end
-        mv(tmp, target; force=true)
-    catch
-        rm(tmp; force=true, recursive=true)
-        rethrow()
     end
     return sha
 end
@@ -458,12 +468,9 @@ function explain_docs(pkg::Union{Module,AbstractString}; online::Bool=false, io:
                              "in its project file, if it is not in docs/src at the top of the repository.")
         end
         if online && !isempty(subdir)
-            m = match(r"github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?/?$", url)
-            if m === nothing
-                line("release", "not looked for, as only GitHub repositories are supported")
-            else
-                line("release", find_release(id, dir, String(m[1]), String(m[2]), subdir))
-            end
+            gh = github_repo(url)
+            line("release", gh === nothing ? "not looked for, as only GitHub repositories are supported" :
+                 find_release(id, dir, gh..., subdir))
         end
     end
     # the hosted documentation
@@ -482,13 +489,8 @@ end
 function find_release(id::PkgId, dir::String, owner::String, repo::String, subdir::String)
     try
         pkg = dynamic(Base.require_stdlib)(PKG)
-        hash = bytes2hex(Base.invokelatest(pkg.GitTools.tree_hash, dir)::Vector{UInt8})
-        w = [Wanted(id, dir, owner, repo, subdir)]
-        found = Dict{String,String}()
-        hashes = Dict(dir => hash)
-        find_releases!(found, owner, repo, w, hashes, guessed_refs(w))
-        isempty(found) && find_releases!(found, owner, repo, w, hashes, listed_refs(owner, repo, w))
-        return get(found, dir, "none of the likely tags and commits has its tree hash $hash")
+        found, hashes = find_releases(pkg, owner, repo, [Wanted(id, dir, owner, repo, subdir)])
+        return get(found, dir, "none of the likely tags and commits has its tree hash $(hashes[dir])")
     catch err
         err isa InterruptException && rethrow()
         return "could not be looked for: " * first_line(err)
