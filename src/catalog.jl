@@ -222,16 +222,30 @@ end
 
 function unloaded_deps()
     d = read_project(Base.active_project())
-    deps = d === nothing ? nothing : get(d, "deps", nothing)
-    deps isa AbstractDict || return PkgId[]
+    d === nothing && return PkgId[]
+    deps = get(d, "deps", nothing)
     ids = PkgId[]
-    for (name, v) in deps
-        uuid = v isa String ? tryparse(UUID, v) : nothing
-        uuid === nothing && continue
-        id = PkgId(uuid, as_string(name))
-        Base.root_module_exists(id) || push!(ids, id)
+    if deps isa AbstractDict
+        for (name, v) in deps
+            uuid = v isa String ? tryparse(UUID, v) : nothing
+            uuid === nothing && continue
+            id = PkgId(uuid, as_string(name))
+            Base.root_module_exists(id) || push!(ids, id)
+        end
     end
-    return sort_by!(ids, id -> lowercase(id.name))
+    sort_by!(ids, id -> lowercase(id.name))
+    # The project can be a package itself, whose docs are wanted most while working on it.
+    self = project_id(d)
+    self === nothing || Base.root_module_exists(self) || pushfirst!(ids, self)
+    return ids
+end
+
+# The package that the active project is, or `nothing`.
+function project_id(d=read_project(Base.active_project()))
+    d === nothing && return nothing
+    name, uuid = get(d, "name", nothing), get(d, "uuid", nothing)
+    uuid = uuid isa String ? tryparse(UUID, uuid) : nothing
+    return name isa String && uuid !== nothing ? PkgId(uuid, name) : nothing
 end
 
 function package_deps(m::Module)

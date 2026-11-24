@@ -1220,8 +1220,10 @@ function section_page(cat::Catalog, role::Symbol, width::Int)
         via = isempty(p.via) ? "" : string("  via ", join(p.via, " → "))
         addline!(pb, "    ", (p.id.name, nothing, ModuleTarget(p.mod)), (version * via, :REPL_DocBrowser_dim))
     end
-    if role === :direct
+    if role in (:project, :direct)
+        self = project_id()
         for id in cat.unloaded
+            (id == self) == (role === :project) || continue
             addline!(pb, "    ", (id.name, nothing, LoadTarget(id)), ("  not loaded", :REPL_DocBrowser_dim))
         end
     end
@@ -1237,11 +1239,13 @@ end
 function unloaded_page(cat::Catalog, id::PkgId, width::Int, then::String="")
     pb = PageBuilder(width)
     stdlib = is_stdlib(id)
+    self = id == project_id()
     dir = unloaded_dir(id)
     addline!(pb)
     title = isempty(then) ? id.name : startswith(then, id.name * ".") ? then : "$(id.name).$then"
     addline!(pb, "  ", (title, :REPL_DocBrowser_title))
-    addline!(pb, "  ", (stdlib ? "standard library · not loaded" : "direct dependency · not loaded", :REPL_DocBrowser_dim))
+    addline!(pb, "  ", (stdlib ? "standard library · not loaded" : self ? "the active project · not loaded" :
+                         "direct dependency · not loaded", :REPL_DocBrowser_dim))
     dir === nothing || addline!(pb, "  ", (Base.contractuser(dir), :REPL_DocBrowser_dim))
     add_links!(pb, id, dir, stdlib ? :stdlib : :direct)
     # Its manual, which its source has, can be read before it is loaded.
@@ -1255,7 +1259,8 @@ function unloaded_page(cat::Catalog, id::PkgId, width::Int, then::String="")
     end
     rule!(pb)
     what = isempty(then) ? "its docstrings are" : "the docstring of $then is"
-    whose = stdlib ? "$(id.name) is a standard library" : "The active project depends on $(id.name)"
+    whose = stdlib ? "$(id.name) is a standard library" : self ? "$(id.name) is the active project" :
+        "The active project depends on $(id.name)"
     addflow!(pb, "  ", Any[w * " " for w in split(
         "$whose, but it has not been loaded yet, so $what not available. Loading it runs " *
         "import $(id.name) in Main.")])

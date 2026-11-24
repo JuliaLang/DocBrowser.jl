@@ -247,9 +247,10 @@ function build_section_rows(b::Browser, role::Symbol)
     for p in b.cat.pkgs
         p.role === role && package_section(p) === role && push!(rows, SideRow(role, p))
     end
-    if role === :direct
+    if role in (:project, :direct)
+        self = project_id()
         for id in b.cat.unloaded
-            push!(rows, SideRow(role, nothing, id))
+            (id == self) == (role === :project) && push!(rows, SideRow(role, nothing, id))
         end
     end
     return rows
