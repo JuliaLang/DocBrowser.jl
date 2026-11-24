@@ -709,7 +709,7 @@ function (@main)(args::Vector{String})
     end
     use_project!(project)
     # so that a command before the one with `--load` does not miss the packages
-    any(c -> "--load" in c.flags, cmds) && load_project_packages(headless_browser())
+    load = any(c -> "--load" in c.flags, cmds)
     found = true
     for (i, c) in enumerate(cmds)
         if length(cmds) > 1
@@ -719,7 +719,7 @@ function (@main)(args::Vector{String})
                     join((" $k $v" for (k, v) in sort!(collect(c.values)) if k != "--project")))
         end
         # a command before can have loaded packages, whose methods are newer than this call
-        print(stdout, invokelatest(run_command, c))
+        print(stdout, invokelatest(run_command, c, load))
         found &= FOUND[]
     end
     return found ? 0 : 1
@@ -759,17 +759,17 @@ function parse_command(args::Vector{String})
     return AgentCommand(cmd, join(words, ' '), flags, values)
 end
 
-function run_command(c::AgentCommand)
+function run_command(c::AgentCommand, load::Bool="--load" in c.flags)
     flags = c.flags
     number(flag, default) = something(tryparse(Int, get(c.values, flag, "")), default)
     if c.cmd == "show"
         return lookup(c.query; outline="--outline" in flags, section=number("--section", 0), brief="--brief" in flags,
-                      width=number("--width", 100), load="--load" in flags)
+                      width=number("--width", 100), load)
     elseif c.cmd == "find"
         return find_docs(c.query; text="--text" in flags, internal="--internal" in flags, limit=number("--limit", 20),
-                         load="--load" in flags)
+                         load)
     else
-        return list_names(c.query; internal="--internal" in flags, load="--load" in flags)
+        return list_names(c.query; internal="--internal" in flags, load)
     end
 end
 

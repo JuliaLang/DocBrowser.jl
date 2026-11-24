@@ -465,6 +465,9 @@ end
             DocBrowser.HEADLESS[] = nothing
             @test occursin("names of a package of the project that is not loaded were not searched: $bare",
                            DocBrowser.lookup("bare_f"))
+            # A name found without them does not load the packages of the project.
+            redirect_stdout(() -> DocBrowser.main(["show", "Base.sort!", "--load", "--brief"]), devnull)
+            @test !haskey(Base.loaded_modules, Base.PkgId(bareuuid, bare))
             # `--load` in a later command loads the packages for the ones before it too.
             out = mktemp() do path, io
                 redirect_stdout(() -> DocBrowser.main(["find", "bare_f", "+", "show", "bare_f", "--load"]), io)
