@@ -29,7 +29,7 @@ stdlib_name(path::AbstractString) = String(first(splitpath(relpath(path, normpat
 # every row of every frame.
 const STDLIBS = Dict{PkgId,Bool}()
 const STDLIBS_LOCK = ReentrantLock()
-is_stdlib(id::PkgId) = @lock STDLIBS_LOCK get!(() -> Base.is_stdlib(id), STDLIBS, id)
+is_stdlib(id::PkgId) = @lock STDLIBS_LOCK get!(() -> dynamic(Base.is_stdlib)(id)::Bool, STDLIBS, id)
 
 first_line(err) = String(first(split(sprint(showerror, err), '\n')))
 
@@ -410,7 +410,7 @@ end
 function is_documented(cat::Catalog, b::Binding)
     b in cat.documented && return true
     alias = @attempt Base.Docs.aliasof(b) b
-    return alias != b && alias in cat.documented
+    return alias isa Binding && alias != b && alias in cat.documented
 end
 
 sortkey(s::Symbol) = (str = String(s); (!Base.isidentifier(lstrip(str, '@')), lowercase(str), str))
@@ -519,7 +519,7 @@ function unloaded_names(cat::Catalog)
         id === nothing || id in loaded || push!(places, (id, joinpath(Sys.STDLIB, name, "docs", "src")))
     end
     for id in cat.unloaded
-        path = Base.locate_package(id)
+        path = dynamic(Base.locate_package)(id)::Union{Nothing,String}
         path === nothing || push!(places, (id, joinpath(dirname(dirname(path)), "docs", "src")))
     end
     for (id, dir) in places
@@ -627,7 +627,7 @@ function doc_results(b::Binding)
     results = DocStr[]
     for m in Base.Docs.modules
         d = Base.Docs.meta(m; autoinit=false)
-        d === nothing && continue
+        d isa IdDict{Any,Any} || continue
         multi = get(d, b, nothing)
         multi isa MultiDoc || continue
         for sig in multi.order
@@ -636,7 +636,7 @@ function doc_results(b::Binding)
     end
     if isempty(results)
         alias = Base.Docs.aliasof(b)
-        alias == b || return doc_results(alias)
+        alias isa Binding && alias != b && return doc_results(alias)
     end
     return results
 end

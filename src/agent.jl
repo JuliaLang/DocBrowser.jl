@@ -24,9 +24,9 @@ function ensure_manual()
     installed_manual_dir() === nothing || return
     isfile(joinpath(downloaded_manual_dir(), "pages.toml")) && return
     Base.generating_output() && return
-    println(stderr, "Downloading Julia's manual for this version of Julia, which is done once...")
+    dynamic(println)(stderr, "Downloading Julia's manual for this version of Julia, which is done once...")
     try
-        download_manual()
+        dynamic(download_manual)()
     catch err
         err isa InterruptException && rethrow()
         MANUAL_NOTE[] = "Julia's manual is not available, as it could not be downloaded: " * first_line(err)
@@ -79,7 +79,7 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
     end
     key, k = page_key(b.cat, t)
     key === nothing && (FOUND[] = false; return "There is no page for $(repr(query)).\n")
-    push!(get!(Set{Symbol}, b.flags, key), :extended)
+    push!(dynamic(get!)(Set{Symbol}, b.flags, key)::Set{Symbol}, :extended)
     p = page(b, key, width)
     io = IOBuffer()
     # the address of the page, without the file that a link to it is given with
@@ -173,7 +173,7 @@ end
 function page_version(@nospecialize(key))
     m = key isa NameEntry ? key.mod : key isa ModuleTarget ? key.mod : nothing
     if key isa LoadTarget
-        file = Base.locate_package(key.id)
+        file = dynamic(Base.locate_package)(key.id)::Union{Nothing,String}
         file === nothing && return nothing
         proj = Base.current_project(dirname(dirname(file)))
         v = proj === nothing ? nothing : get(Base.parsed_toml(proj), "version", nothing)
@@ -379,7 +379,7 @@ function find_docs(query::AbstractString; text::Bool=false, internal::Bool=false
     out = String(take!(io))
     if isempty(out) && !text
         # a phrase, rather than a name or the words of a heading, is more likely in the text
-        out = find_docs(query; internal, limit, text=true)
+        out = find_docs(query; internal, limit, text=true)::String
         FOUND[] && (out = "(No name or heading matches, so these are from the text of the docs.)\n" * out)
         return out
     end

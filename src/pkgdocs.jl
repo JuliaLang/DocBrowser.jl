@@ -26,7 +26,7 @@ function package_docs(cat::Catalog, m::Module)
     (p === nothing || p.role in (:extension, :julia, :main) || parentmodule(m) !== m) && return NO_DOCS
     dir = pkgdir(m)
     dir === nothing && return NO_DOCS
-    return get!(() -> own_or_fetched_docs(dir), cat.pkgdocs, dir)
+    return get!(() -> own_or_fetched_docs(dir), cat.pkgdocs, dir)::PackageDocs
 end
 
 function package_docs(dir::String)
@@ -300,14 +300,14 @@ end
 
 # Where a package that is not loaded is, as the environment would load it.
 function unloaded_dir(id::PkgId)
-    path = Base.locate_package(id)
+    path = dynamic(Base.locate_package)(id)::Union{Nothing,String}
     return path === nothing ? nothing : dirname(dirname(path))
 end
 
 # The manual of a package that is not loaded, read from its source.
 function unloaded_docs(cat::Catalog, id::PkgId)
     dir = unloaded_dir(id)
-    return dir === nothing ? NO_DOCS : get!(() -> own_or_fetched_docs(dir), cat.pkgdocs, dir)
+    return dir === nothing ? NO_DOCS : get!(() -> own_or_fetched_docs(dir), cat.pkgdocs, dir)::PackageDocs
 end
 
 # The names that the manual of a package that is not loaded lists.

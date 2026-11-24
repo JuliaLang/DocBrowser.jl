@@ -60,11 +60,11 @@ const SHIFT, ALT, CTRL = 1, 2, 4
 const SEQUENCE_WAIT = Ref(0.03)
 
 function wait_bytes(io::IO, timeout::Float64)
-    bytesavailable(io) > 0 && return true
+    bytesavailable(io)::Int > 0 && return true
     # Asking whether the input has ended waits for the next byte without taking it. Once the
     # input has ended there is nothing more to wait for.
     ended = Ref(false)
-    return within(() -> ended[] = eof(io), timeout) && !ended[]
+    return within(() -> ended[] = eof(io)::Bool, timeout) && !ended[]
 end
 
 # The modifier parameter of a CSI sequence is 1 + (shift | alt<<1 | ctrl<<2).
