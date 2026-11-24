@@ -488,7 +488,7 @@ function agent_target(cat::Catalog, query::String, ctx::Module)
         end
         unloaded = findfirst(id -> id.name == parts[1], cat.unloaded)
         load = unloaded === nothing ? nothing :
-            LoadTarget(cat.unloaded[unloaded], length(parts) > 1 ? join(parts[2:end], '.') : "")
+            LoadTarget(cat.unloaded[unloaded], length(parts) > 1 ? String(s) : "")
         for root in unique!(roots)
             t = name_target(root, root === ctx || root === Main || root === Base || root === Core ?
                                   parts : parts[2:end])
@@ -561,7 +561,7 @@ function link_ref(b::Browser, key, @nospecialize(t))
     t isa NameTarget && return string(display_name(t.mod), '.', t.name)
     t isa ModuleTarget && return display_name(t.mod)
     t isa URLTarget && return t.url
-    t isa LoadTarget && return isempty(t.then) ? t.id.name : string(t.id.name, '.', t.then)
+    t isa LoadTarget && return isempty(t.then) ? t.id.name : t.then
     if t isa ManualTarget
         # what `show` takes, then the file, which can be read directly
         ref = page_ref(t.path)
