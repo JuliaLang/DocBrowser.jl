@@ -29,8 +29,14 @@ Run them in the project's directory, or pass `--project PATH`.
   the page is about.
 - `jldocs names <module>`: the names of a module, by kind, and whether each is exported
   or public. `--internal` adds the others.
+- Several commands can go in one call, split by `+`, as in
+  `jldocs find sort + show Base.sort! --brief + names Base.Iterators`, or one a line on standard
+  input with `jldocs -`. Starting Julia and loading packages is most of the time a command
+  takes, so batch the lookups you already know you need. Each answer starts with a
+  `## jldocs <command>` line, and `--project` is for all of them.
 - The exit code is 0 for an answer, 1 when nothing was found, and 2 for a mistake in the
-  command, such as an option it does not take.
+  command, such as an option it does not take. For several commands it is 1 if any found
+  nothing.
 
 ## Reading pages without wasting context
 

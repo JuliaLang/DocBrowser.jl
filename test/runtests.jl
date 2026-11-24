@@ -2092,6 +2092,30 @@ end
     end
     # Finding nothing is said by the exit code too.
     @test redirect_stdout(() -> DocBrowser.main(["show", "Fixture.nosuchname"]), devnull) == 1
+    # Several commands in one call, split by `+` or read from standard input, each under a line
+    # that says which it is. Finding nothing for any of them is said by the exit code.
+    out = mktemp() do path, io
+        code = redirect_stdout(() -> DocBrowser.main(["find", "sort!", "+", "show", "Base.sort!", "--brief"]), io)
+        close(io)
+        (code, read(path, String))
+    end
+    @test out[1] == 0 && startswith(out[2], "## jldocs find sort!\n") &&
+        occursin("\n\n## jldocs show Base.sort! --brief\n# Base.sort!", out[2])
+    out = mktemp() do path, io
+        write(io, "names Fixture\n\nshow Fixture.nosuchname\n")
+        seekstart(io)
+        redirect_stdin(io) do
+            mktemp() do opath, oio
+                code = redirect_stdout(() -> DocBrowser.main(["-"]), oio)
+                close(oio)
+                (code, read(opath, String))
+            end
+        end
+    end
+    @test out[1] == 1 && occursin("## jldocs names Fixture\n", out[2]) && occursin("## jldocs show Fixture.nosuchname\n", out[2])
+    for args in (["find", "x", "+"], ["find", "x", "+", "frob", "y"], ["find", "x", "--project", "a", "+", "show", "y", "--project", "b"])
+        @test redirect_stderr(() -> DocBrowser.main(args), devnull) == 2
+    end
     DocBrowser.CLI[] = false
 end
 

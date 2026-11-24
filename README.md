@@ -144,6 +144,7 @@ jldocs show manual/arrays --outline      # the headings of a long page...
 jldocs show manual/arrays --section 21   # ...and one of them
 jldocs show GLMakie/                     # the pages of a package's manual
 jldocs names Plots --load                # the names of a module
+jldocs find sort + show Base.sort!       # several commands, for one start of Julia
 ```
 
 It works in the project of the current directory, or the one `--project PATH` names. It does
@@ -151,6 +152,10 @@ not load the project's packages unless asked to with `--load`, since that runs t
 the app, `julia --project -m DocBrowser ...` does the same in an environment that has DocBrowser,
 and in Julia `DocBrowser.find_docs`, `DocBrowser.lookup` and `DocBrowser.list_names` return the
 same text.
+
+Most of the time a command takes is starting Julia and loading packages, so several commands
+can share one call, split by `+`, or one a line from standard input with `jldocs -`. Each answer
+then starts with a `## jldocs <command>` line.
 
 ### What an agent does with it
 

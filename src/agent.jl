@@ -593,7 +593,9 @@ const AGENT_USAGE = """
     Julia's documentation, as plain text: the manual, and the docstrings of the packages in a
     project, at the versions it uses.
 
-    usage: jldocs <command> [options]     (or: julia -m DocBrowser <command> [options])
+    usage: jldocs <command> [options] [+ <command> [options] ...]
+           jldocs -                       (commands from standard input, one a line)
+           julia -m DocBrowser ...        (the same, without the app)
 
       find <words> [--text] [--internal] [--limit N] [--load]
           Names, and sections of Julia's manual and of the project's packages' manuals, that
@@ -615,6 +617,10 @@ const AGENT_USAGE = """
     packages are not loaded without `--load`, which runs their code; until then their pages show
     what their source documents, such as the README, and `find` does not know their names.
     Julia's manual is downloaded the first time it is needed.
+
+    Several commands in one call, split by `+` or one a line for `-`, start Julia and load the
+    packages once, which is most of the time a command takes. Each answer then starts with a
+    `## jldocs <command>` line. `--project` is for all of them.
 
     Exit codes: 0 for an answer, 1 when nothing was found, 2 for a mistake in the command.
     """
@@ -640,10 +646,61 @@ function use_project!(path::Union{Nothing,String})
     return
 end
 
+struct AgentCommand
+    cmd::String
+    query::String
+    flags::Set{String}
+    values::Dict{String,String}
+end
+
 function (@main)(args::Vector{String})
     any(in(("help", "--help", "-h")), args[1:min(1, end)]) && (print(stdout, AGENT_USAGE); return 0)
     CLI[] = true
-    # options can come before or after the command
+    isempty(args) && (print(stderr, AGENT_USAGE); return 1)
+    # Several commands share one start of Julia and one load of the packages, each split from
+    # the next by `+`, or read from standard input one a line for `-`.
+    groups = Vector{String}[]
+    for a in [args; "+"]
+        isempty(groups) && push!(groups, String[])
+        a == "+" ? push!(groups, String[]) : push!(groups[end], a)
+    end
+    pop!(groups)
+    if any(==(["-"]), groups)
+        lines = filter!(!isempty, split.(readlines(stdin)))
+        i = findfirst(==(["-"]), groups)
+        groups = [groups[1:i-1]; [String.(l) for l in lines]; groups[i+1:end]]
+    end
+    # Every command is checked before any is run, so that a mistake costs no time.
+    project = nothing
+    cmds = AgentCommand[]
+    for g in groups
+        c = parse_command(g)
+        c isa String && return usage_error(c)
+        p = get(c.values, "--project", nothing)
+        if p !== nothing
+            project === nothing || project == p || return usage_error("the commands name different projects")
+            project = p
+        end
+        push!(cmds, c)
+    end
+    use_project!(project)
+    found = true
+    for (i, c) in enumerate(cmds)
+        if length(cmds) > 1
+            i > 1 && println(stdout)
+            println(stdout, "## jldocs ", c.cmd, " ", c.query,
+                    join((" " * f for f in sort!(collect(c.flags)))),
+                    join((" $k $v" for (k, v) in sort!(collect(c.values)) if k != "--project")))
+        end
+        # a command before can have loaded packages, whose methods are newer than this call
+        print(stdout, invokelatest(run_command, c))
+        found &= FOUND[]
+    end
+    return found ? 0 : 1
+end
+
+# A command and its options, which can come before or after it, or what is wrong with them.
+function parse_command(args::Vector{String})
     words = String[]
     flags = Set{String}()
     values = Dict{String,String}()
@@ -651,7 +708,7 @@ function (@main)(args::Vector{String})
     while i <= length(args)
         a = args[i]
         if a in VALUE_OPTIONS
-            i < length(args) || return usage_error("`$a` needs a value")
+            i < length(args) || return "`$a` needs a value"
             values[a] = args[i+1]
             i += 1
         elseif startswith(a, "--project=")
@@ -663,30 +720,31 @@ function (@main)(args::Vector{String})
         end
         i += 1
     end
-    isempty(words) && (print(stderr, AGENT_USAGE); return 1)
+    isempty(words) && return "a command is missing, as before or after a `+`"
     cmd = popfirst!(words)
-    haskey(AGENT_OPTIONS, cmd) || return usage_error("there is no command `$cmd`")
-    isempty(words) && return usage_error("`$cmd` needs something to look for")
+    haskey(AGENT_OPTIONS, cmd) || return "there is no command `$cmd`"
+    isempty(words) && return "`$cmd` needs something to look for"
     for opt in Iterators.flatten((flags, keys(values)))
-        opt == "--project" || opt in AGENT_OPTIONS[cmd] || return usage_error("`$cmd` has no option `$opt`")
+        opt == "--project" || opt in AGENT_OPTIONS[cmd] || return "`$cmd` has no option `$opt`"
     end
     for (opt, v) in values
-        opt == "--project" || tryparse(Int, v) !== nothing || return usage_error("`$opt` needs a number, not `$v`")
+        opt == "--project" || tryparse(Int, v) !== nothing || return "`$opt` needs a number, not `$v`"
     end
-    number(flag, default) = something(tryparse(Int, get(values, flag, "")), default)
-    use_project!(get(values, "--project", nothing))
-    query = join(words, ' ')
-    out = if cmd == "show"
-        lookup(query; outline="--outline" in flags, section=number("--section", 0), brief="--brief" in flags,
-               width=number("--width", 100), load="--load" in flags)
-    elseif cmd == "find"
-        find_docs(query; text="--text" in flags, internal="--internal" in flags, limit=number("--limit", 20),
-                  load="--load" in flags)
+    return AgentCommand(cmd, join(words, ' '), flags, values)
+end
+
+function run_command(c::AgentCommand)
+    flags = c.flags
+    number(flag, default) = something(tryparse(Int, get(c.values, flag, "")), default)
+    if c.cmd == "show"
+        return lookup(c.query; outline="--outline" in flags, section=number("--section", 0), brief="--brief" in flags,
+                      width=number("--width", 100), load="--load" in flags)
+    elseif c.cmd == "find"
+        return find_docs(c.query; text="--text" in flags, internal="--internal" in flags, limit=number("--limit", 20),
+                         load="--load" in flags)
     else
-        list_names(query; internal="--internal" in flags, load="--load" in flags)
+        return list_names(c.query; internal="--internal" in flags, load="--load" in flags)
     end
-    print(stdout, out)
-    return FOUND[] ? 0 : 1
 end
 
 function usage_error(msg::String)
