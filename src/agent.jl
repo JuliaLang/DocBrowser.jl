@@ -62,9 +62,14 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
     place isa PackageManual && return package_manual_index(place)
     t = something(place, agent_target(b.cat, String(query), context), Some(nothing))
     if t === nothing
+        # The name can be one that a package of the project exports.
+        if load && !isempty(b.cat.unloaded)
+            load_project_packages(b)
+            return invokelatest(lookup, query; outline, section, brief, width, context)
+        end
         FOUND[] = false
         note = MANUAL_NOTE[] === nothing ? "" : "\n" * MANUAL_NOTE[]
-        return "Nothing is called $(repr(query)); $(search_hint()).$note\n"
+        return "Nothing is called $(repr(query)); $(search_hint()).$note\n" * unloaded_note(b.cat)
     end
     t isa URLTarget && return "$(query) is a web page: $(t.url)\n"
     if t isa LoadTarget && load
@@ -349,10 +354,7 @@ function find_docs(query::AbstractString; text::Bool=false, internal::Bool=false
     FOUND[] = true
     b = headless_browser()
     if load && !isempty(b.cat.unloaded)
-        for id in b.cat.unloaded
-            @attempt Core.eval(Main, :(import $(Symbol(id.name)))) nothing
-        end
-        HEADLESS[] = nothing # the catalog was made before the packages were loaded
+        load_project_packages(b)
         return invokelatest(find_docs, query; text, internal, limit)
     end
     io = IOBuffer()
@@ -385,15 +387,26 @@ function find_docs(query::AbstractString; text::Bool=false, internal::Bool=false
         FOUND[] = false
         out = "Nothing matches $(repr(query)).\n"
     end
-    # what could not be searched, so that a miss is not taken for an answer
-    unloaded = [id.name for id in b.cat.unloaded]
+    return out * unloaded_note(b.cat)
+end
+
+function load_project_packages(b::Browser)
+    for id in b.cat.unloaded
+        @attempt Core.eval(Main, :(import $(Symbol(id.name)))) nothing
+    end
+    HEADLESS[] = nothing # the catalog was made before the packages were loaded
+end
+
+# What could not be searched, so that a miss is not taken for an answer.
+function unloaded_note(cat::Catalog)
+    unloaded = [id.name for id in cat.unloaded]
     n = length(unloaded)
-    isempty(unloaded) || (out *= "(The names of " * (n == 1 ? "a package" : "$n packages") *
+    isempty(unloaded) && return ""
+    return "(The names of " * (n == 1 ? "a package" : "$n packages") *
         " of the project that " * (n == 1 ? "is" : "are") * " not loaded were not searched: " *
         "$(join(first(unloaded, 5), ", "))$(n > 5 ? ", …" : ""). " *
         "To load " * (n == 1 ? "it" : "them") * ", which runs " * (n == 1 ? "its" : "their") * " code, " *
-        (CLI[] ? "add `--load`" : "pass `load=true`") * ".)\n")
-    return out
+        (CLI[] ? "add `--load`" : "pass `load=true`") * ".)\n"
 end
 
 # Sections of the manuals of the project's packages whose heading, or the title of their page,
@@ -486,6 +499,12 @@ function agent_target(cat::Catalog, query::String, ctx::Module)
             return t
         end
         load === nothing || return load
+        # A name that a package of the project exports, as after `using` it.
+        for e in cat.pkgs
+            e.role in (:project, :direct) && Base.isexported(e.mod, Symbol(parts[1])) || continue
+            t = name_target(e.mod, parts)
+            t === nothing || return t
+        end
     end
     return place_target("docs: " * s, cat)
 end
@@ -625,7 +644,7 @@ const AGENT_USAGE = """
 
     Several commands in one call, split by `+` or one a line for `-`, start Julia and load the
     packages once, which is most of the time a command takes. Each answer then starts with a
-    `## jldocs <command>` line. `--project` is for all of them.
+    `## jldocs <command>` line. `--project` and `--load` are for all of them.
 
     Exit codes: 0 for an answer, 1 when nothing was found, 2 for a mistake in the command.
     """
@@ -689,6 +708,8 @@ function (@main)(args::Vector{String})
         push!(cmds, c)
     end
     use_project!(project)
+    # so that a command before the one with `--load` does not miss the packages
+    any(c -> "--load" in c.flags, cmds) && load_project_packages(headless_browser())
     found = true
     for (i, c) in enumerate(cmds)
         if length(cmds) > 1

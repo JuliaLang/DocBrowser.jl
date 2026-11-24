@@ -155,7 +155,8 @@ same text.
 
 Most of the time a command takes is starting Julia and loading packages, so several commands
 can share one call, split by `+`, or one a line from standard input with `jldocs -`. Each answer
-then starts with a `## jldocs <command>` line.
+then starts with a `## jldocs <command>` line, and `--load` in any of them loads the packages for
+all of them.
 
 ### What an agent does with it
 
