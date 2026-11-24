@@ -3,11 +3,12 @@
 # The sections of the start page, in order. The names pane lists them.
 const START_SECTIONS = ("New to Julia?", "Finding things", "Your project", "Release notes")
 
+# The systems that a tip can be for, by the names the tips file has for them.
+const SYSTEMS = Dict("bsd" => Sys.isbsd, "linux" => Sys.islinux, "windows" => Sys.iswindows)
+
 # The tips for the start page, as text with code in backticks and the section of the docs that
 # says more: a standard library's name or `:manual`, a page and a heading, or nothing. They are
 # read when the package is precompiled.
-const SYSTEMS = Dict("bsd" => Sys.isbsd, "linux" => Sys.islinux, "windows" => Sys.iswindows)
-
 function read_tips(path::String)
     tips = Tuple{String,Union{Nothing,Tuple{Union{Symbol,String},String,String}}}[]
     for t in Base.parsed_toml(path)["tip"]
@@ -72,13 +73,13 @@ const START_KEYS = (("/", "search names, the manual and the text of docstrings")
                     ("click", "anything to open it; right-click opens its source"),
                     ("?", "every key, and what the marks mean"))
 
+version_string() = string(@static isdefined(Base, :version_with_build_variant) ? Base.version_with_build_variant() : VERSION)
+
 """
     version_block!(pb)
 
 The version of Julia and what kind of build it is, beside the Julia logo.
 """
-version_string() = string(@static isdefined(Base, :version_with_build_variant) ? Base.version_with_build_variant() : VERSION)
-
 function version_block!(pb::PageBuilder)
     git = Base.GIT_VERSION_INFO
     kind = isempty(VERSION.prerelease) ? "release" :

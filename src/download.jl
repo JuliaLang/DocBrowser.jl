@@ -15,6 +15,10 @@ end
 download_url(url, out) = Base.invokelatest(downloader().download, url, out)
 is_not_found(err) = err isa downloader().RequestError && err.response.status == 404
 
+# A string as TOML has it. `repr` would write `\$`, which TOML cannot read.
+toml_string(s::AbstractString) =
+    string('"', replace(s, '\\' => "\\\\", '"' => "\\\"", r"[\x00-\x1f\x7f]" => ' '), '"')
+
 julia_ref() = (c = Base.GIT_VERSION_INFO.commit; isempty(c) ? "v$VERSION" : c)
 
 # Where to look for the manual, nearest first. A local build or a fork can be at a commit
@@ -81,11 +85,11 @@ function make_page_lists(src::AbstractString)
 end
 
 function write_pages_toml(io::IO, lists)
-    printlist(ps) = join(("    " * repr(p) for p in ps), ",\n")
+    printlist(ps) = join(("    " * toml_string(p) for p in ps), ",\n")
     println(io, "manual = [\n", printlist(lists["manual"]), "\n]\n")
     println(io, "base = [\n", printlist(lists["base"]), "\n]\n")
     for g in lists["devdocs"]
-        println(io, "[[devdocs]]\ntitle = ", repr(g["title"]), "\npages = [\n", printlist(g["pages"]), "\n]\n")
+        println(io, "[[devdocs]]\ntitle = ", toml_string(g["title"]), "\npages = [\n", printlist(g["pages"]), "\n]\n")
     end
 end
 

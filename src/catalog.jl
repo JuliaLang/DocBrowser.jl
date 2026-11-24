@@ -179,6 +179,7 @@ mutable struct Catalog
     manual_index::Tuple{Any,Dict{String,Int}} # the place of each page in `manual`, by its path
     # where the manual of each package is, with or without a downloaded copy, for so many packages
     docs_dirs::Tuple{Int,Vector{Tuple{String,PkgEntry}}}
+    manuals::Any # the manuals of the packages, with the address of each page, found on first use
 end
 
 function parse_uuids(deps)
@@ -197,6 +198,10 @@ function read_project(path)
     d = @attempt Base.parsed_toml(path) return nothing
     return d isa AbstractDict ? d : nothing
 end
+
+# The project file of the package at `dir`, which is empty when it has none that can be read.
+package_project(dir::String) =
+    something(read_project(Base.env_project_file(dir)), Dict{String,Any}())::Dict{String,Any}
 
 function project_info()
     d = read_project(Base.active_project())
@@ -254,9 +259,7 @@ function package_deps(m::Module)
     ext === nothing || return UUID[id.uuid for id in ext if id.uuid !== nothing]
     dir = pkgdir(m)
     dir === nothing && return UUID[]
-    d = read_project(Base.env_project_file(dir))
-    d === nothing && return UUID[]
-    return parse_uuids(get(d, "deps", nothing))
+    return parse_uuids(get(package_project(dir), "deps", nothing))
 end
 
 function extension_parent(id::PkgId)
@@ -342,7 +345,7 @@ function Catalog()
     return Catalog(pkgs, bymod, documented_bindings(), IdDict{Module,Vector{NameEntry}}(), nothing,
                    unloaded_deps(), nothing, manual_pages(), nothing, Dict{String,Vector{Heading}}(), Dict{String,Vector{Heading}}(), nothing,
                    Dict{String,Any}(), nothing, Matches(), Matches(), Matches(), (nothing, Dict{String,Int}()),
-                   (0, Tuple{String,PkgEntry}[]))
+                   (0, Tuple{String,PkgEntry}[]), nothing)
 end
 
 function documented_bindings()

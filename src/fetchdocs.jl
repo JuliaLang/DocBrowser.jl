@@ -47,9 +47,9 @@ function save_records!(new::Dict{String,Dict{String,Any}})
         open(tmp, "w") do io
             for (k, v) in merge(old, new)
                 v isa AbstractDict || continue
-                println(io, "[", repr(String(k)), "]")
+                println(io, "[", toml_string(k), "]")
                 for (field, x) in v
-                    println(io, field, " = ", x isa String ? repr(x) : x)
+                    println(io, field, " = ", x isa String ? toml_string(x) : x)
                 end
                 println(io)
             end
@@ -268,7 +268,7 @@ end
 function guessed_refs(wanted::Vector{Wanted})
     refs = String[]
     for w in wanted
-        project = Base.parsed_toml(joinpath(w.dir, "Project.toml"))
+        project = package_project(w.dir)
         for (_, c) in get(project, "compat", Dict{String,Any}())
             c isa String && (m = match(r"^=\s*(\d+\.\d+\.\d+)$", c)) !== nothing && push!(refs, "v" * m[1])
         end
@@ -370,9 +370,7 @@ end
 
 # Where the package says its manual is, as `source` in the `[docs]` section of its project file.
 function docs_source(dir::String)
-    file = joinpath(dir, "Project.toml")
-    isfile(file) || return nothing
-    docs = get(Base.parsed_toml(file), "docs", nothing)
+    docs = get(package_project(dir), "docs", nothing)
     docs isa AbstractDict || return nothing
     s = get(docs, "source", nothing)
     return s isa String ? s : nothing
@@ -401,7 +399,7 @@ function explain_docs(pkg::Union{Module,AbstractString}; online::Bool=false, io:
     id === nothing && return println(io, "$pkg is not a package of the active project.")
     dir = pkg isa Module ? pkgdir(pkg) : unloaded_dir(id)
     dir === nothing && return println(io, "$(id.name) is not installed.")
-    project = isfile(joinpath(dir, "Project.toml")) ? Base.parsed_toml(joinpath(dir, "Project.toml")) : Dict{String,Any}()
+    project = package_project(dir)
     v = get(project, "version", nothing)
     println(io, id.name, v isa String ? " $v" : "", "  ", contractuser(dir))
     line(what, text) = println(io, "  ", rpad(what, 16), text)
@@ -582,5 +580,5 @@ function packages_wanting_manuals(pkgs::Vector{PkgEntry}, unloaded::Vector{PkgId
     # then whether it has a manual of its own. An extension is in the directory of its package,
     # whose project file names the package.
     return filter!(((id, dir),) -> wants_manual(dir) && !isdir(joinpath(dir, "docs")) &&
-                                   get(Base.parsed_toml(joinpath(dir, "Project.toml")), "name", "") == id.name, unique!(out))
+                                   get(package_project(dir), "name", "") == id.name, unique!(out))
 end

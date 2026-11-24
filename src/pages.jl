@@ -528,11 +528,6 @@ end
 
 const MAX_LISTED = 100
 
-"""
-    add_methods!(pb, title, ms)
-
-List methods `ms` by signature. Each links to its definition.
-"""
 # The Markdown of each docstring. Packages add their own ways to format docstrings.
 parse_docs(results::Vector{DocStr}) = Any[dynamic(REPL.parsedoc)(d) for d in results]
 
@@ -556,6 +551,11 @@ function labelled_docs(results::Vector{DocStr})
     return out
 end
 
+"""
+    add_methods!(pb, title, ms)
+
+List methods `ms` by signature. Each links to its definition.
+"""
 function add_methods!(pb::PageBuilder, title::String, ms)
     isempty(ms) && return
     heading!(pb, string(title, " (", length(ms), ")"))
@@ -836,7 +836,7 @@ function jll_licence_dir(id::PkgId)
 end
 
 """
-    julia_docs(path="") -> String
+    julia_docs(path="", v=VERSION) -> String
 
 The address of `path` in the manual for Julia version `v`.
 """
@@ -862,18 +862,15 @@ development one.
 function docs_url(dir)
     (dir === nothing || !isdir(dir)) && return nothing
     # The package's own word for it, in the `[docs]` section of its project file.
-    project = joinpath(dir, "Project.toml")
-    if isfile(project)
-        d = Base.parsed_toml(project)
-        section = get(d, "docs", nothing)
-        url = section isa AbstractDict ? get(section, "url", nothing) : nothing
-        v = get(d, "version", nothing)
-        url isa String && occursin(r"^https?://", url) &&
-            return v isa String ? replace(url, "{version}" => v) : replace(url, "v{version}" => "stable")
-    end
-    readme = findfirst(f -> occursin(r"^readme(\.md)?$"i, f), readdir(dir))
+    d = package_project(dir)
+    section = get(d, "docs", nothing)
+    url = section isa AbstractDict ? get(section, "url", nothing) : nothing
+    v = get(d, "version", nothing)
+    url isa String && occursin(r"^https?://", url) &&
+        return v isa String ? replace(url, "{version}" => v) : replace(url, "v{version}" => "stable")
+    readme = find_readme(dir)
     readme === nothing && return nothing
-    text = @attempt read(joinpath(dir, readdir(dir)[readme]), String) return nothing
+    text = @attempt read(readme, String) return nothing
     found = nothing
     for (i, re) in enumerate(BADGE_PATTERNS), m in eachmatch(re, text)
         label, url = i == 1 ? (m[1] * " " * m[2], m[3]) : i == 2 ? (m[1], m[2]) : (m[2], m[1])

@@ -175,6 +175,7 @@ const BLOCKS = (docs = (:manual, :basedocs, :stdlibdocs, :devdocs),
 const SECTION_ORDER = (:docs, BLOCKS.docs..., :code, BLOCKS.code...)
 const MANUAL_ROLES = BLOCKS.docs
 const DEFAULT_EXPANDED = (:docs, :code, :project, :direct)
+# Whether the sidebar has anything to list in section `role`.
 const SIDEBAR_TITLES = (docs = "Julia", code = "Packages", manual = "Manual", basedocs = "Base",
                         stdlibdocs = "Standard library", pkgdocs = "Pkg", devdocs = "Developer docs", project = "Project",
                         direct = "Dependencies", indirect = "Indirect", julia = "Core and Base",
@@ -182,7 +183,6 @@ const SIDEBAR_TITLES = (docs = "Julia", code = "Packages", manual = "Manual", ba
 
 is_block(role::Symbol) = role === :docs || role === :code
 
-# Whether the sidebar has anything to list in section `role`.
 # Pkg's manual is one row of the sidebar, which stands for all its pages. It shows the first.
 pkg_pages(b::Browser) = filter(p -> p.role === :pkgdocs, b.cat.manual)
 
@@ -3397,6 +3397,7 @@ function fetch_docs!(b::Browser)
             "Could not download $(id.name)'s manual: " * first_line(err) *
                 " · DocBrowser.explain_docs(\"$(id.name)\"; online=true) says more"
         end
+        b.cat.manuals = nothing
         manuals_changed!(b; status=msg)
     end)
     return

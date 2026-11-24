@@ -368,7 +368,7 @@ end
             lid = Base.PkgId(linkuuid, link)
             @test lid in b.cat.unloaded
             @test only(r for r in b.side_rows if r.unloaded == lid).role === :project
-            @test any(r -> r[1] == "$link/index", DocBrowser.search_package_manuals(b, link))
+            @test any(r -> r[1] == "$link/index", DocBrowser.search_package_manuals(b.cat, link))
             @test occursin("$link is the active project", join(String.(DocBrowser.page(b, DocBrowser.LoadTarget(lid), 80).lines), '\n'))
             Base.set_active_project(joinpath(env, "Project.toml"))
             b = Browser(fake_terminal(""))
@@ -1143,9 +1143,8 @@ end
             # In plain text, the manual's pages have addresses that `lookup` and `find_docs` know.
             hb = Browser(fake_terminal(""), cat)
             DocBrowser.HEADLESS[] = hb
-            DocBrowser.PACKAGE_MANUALS[] = nothing
             try
-                pm = only(m for m in DocBrowser.package_manuals(hb) if m.name == "DocsFixture")
+                pm = only(m for m in DocBrowser.package_manuals(cat) if m.name == "DocsFixture")
                 @test pm.refs == ["DocsFixture/index", "DocsFixture/man/api"]
                 @test occursin("DocsFixture/man/api  API", DocBrowser.lookup("DocsFixture/"))
                 api_page = DocBrowser.lookup("DocsFixture/man/api")
@@ -1153,7 +1152,6 @@ end
                 @test occursin("DocsFixture/man/api  manual of DocsFixture: API", DocBrowser.find_docs("api"))
             finally
                 DocBrowser.HEADLESS[] = nothing
-                DocBrowser.PACKAGE_MANUALS[] = nothing
             end
             # The names pane lists the pages before the names, and picking one shows it.
             b = Browser(fake_terminal(""), cat)
@@ -2074,6 +2072,13 @@ end
         @test !DocBrowser.wants_manual(bar) && !DocBrowser.wants_manual(baz)
         DocBrowser.save_records!(Dict("Baz/abcde" => Dict{String,Any}("failed" => round(Int, time()) - 2 * 86400, "reason" => "x")))
         @test DocBrowser.wants_manual(baz)
+        # A reason is read back as it was written, whatever is in it, and so are the other records.
+        why = "no \$ref of \"o/r\" at C:\\docs"
+        DocBrowser.save_records!(Dict("Baz/abcde" => Dict{String,Any}("none" => why)))
+        DocBrowser.RECORDS[] = nothing
+        @test DocBrowser.record(baz)["none"] == why && !DocBrowser.wants_manual(bar)
+        # A package with no project file has no version, rather than being an error.
+        @test DocBrowser.installed_version(mktempdir()) === nothing
     finally
         popfirst!(DEPOT_PATH)
         DocBrowser.RECORDS[] = nothing
