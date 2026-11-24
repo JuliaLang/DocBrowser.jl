@@ -150,7 +150,9 @@ jldocs find sort + show Base.sort!       # several commands, for one start of Ju
 It works in the project of the current directory, or the one `--project PATH` names. A package
 a name is asked for in, such as Plots for `jldocs show Plots.plot`, is loaded, which runs its code,
 unless it would have to be precompiled first. `--load` precompiles it too, and loads all the
-project's packages for `find` and for a name found only once they are loaded. Without
+project's packages for `find` and for a name found only once they are loaded. Two packages of
+the project with one name are told apart as Pkg does, by the UUID after the name, or any start
+of it that only one of them has, as in `jldocs show Example=7876af07.hello`. Without
 the app, `julia --project -m DocBrowser ...` does the same in an environment that has DocBrowser,
 and in Julia `DocBrowser.find_docs`, `DocBrowser.lookup` and `DocBrowser.list_names` return the
 same text.

@@ -67,15 +67,27 @@ is loaded first, which runs its code, so that its docstrings can be read. If it 
 be precompiled first, it is only loaded with `load`, and until then its page shows what its
 source documents, such as its README. `load` also loads the other packages of the project
 when `query` is not found without them.
+
+When two packages of the project have one name, the name alone is the one that the project
+depends on. Either is picked as Pkg does, by its UUID after the name, or any start of it that
+only one of them has, as in `Example=7876af07.hello`.
 """
 function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brief::Bool=false,
                 width::Int=100, context::Module=Main, load::Bool=false)
     FOUND[] = true
     b = headless_browser()
     strip(query) in ("manual", "docs") && return manual_index(b)
-    place = package_place(b.cat, String(query))
+    q, pick = split_package(b.cat, query)
+    pick isa String && (FOUND[] = false; return pick)
+    # A package that the catalog does not list, as only another package depends on it, has
+    # nothing to show until it is loaded.
+    if pick isa PkgId && !is_listed(b.cat, pick) && (load || loads_quickly(pick))
+        load_for_answer(pick)
+        return invokelatest(lookup, query; outline, section, brief, width, context)
+    end
+    place = package_place(b.cat, q, pick)
     place isa PackageManual && return package_manual_index(place)
-    t = something(place, agent_target(b.cat, String(query), context), Some(nothing))
+    t = something(place, agent_target(b.cat, q, context, pick), Some(nothing))
     if t === nothing
         # The name can be one that a package of the project exports.
         if load && !isempty(b.cat.unloaded)
@@ -97,7 +109,8 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
     p = page(b, key, width)
     io = IOBuffer()
     # the address of the page, without the file that a link to it is given with
-    title = something(place_ref(b.cat, key, 0), link_ref(b, key, key), key_title(b, key))
+    title = something(key isa NameEntry ? agent_name(b.cat, key.mod, display_name(key)) : link_ref(b, key, key),
+                      place_ref(b.cat, key, 0), key_title(b, key))
     title = String(first(split(as_string(title), "  ")))
     v = page_version(key)
     pkgpage = key isa ManualTarget ? package_page(b.cat, key.path) : nothing
@@ -108,12 +121,15 @@ function lookup(query::AbstractString; outline::Bool=false, section::Int=0, brie
     key isa LoadTarget && println(io, "(", key.id.name, " is not precompiled, so it was not loaded and its docstrings ",
                                   "cannot be read. To precompile and load it, ", load_hint(), ".)")
     # A package's manual, whose pages are listed in the browser with its names.
-    name = key isa ModuleTarget && parentmodule(key.mod) === key.mod ? String(nameof(key.mod)) :
-           key isa LoadTarget && isempty(key.then) ? key.id.name : nothing
+    id = key isa ModuleTarget && parentmodule(key.mod) === key.mod ? PkgId(key.mod) :
+         key isa LoadTarget && isempty(key.then) ? key.id : nothing
     manuals = package_manuals(b.cat)
-    manual = name === nothing ? nothing : findfirst(m -> m.name == name, manuals)
-    manual === nothing || println(io, "(Its manual has $(length(manuals[manual].pages)) pages: ",
-                                  CLI[] ? "`jldocs show $name/`" : "`lookup(\"$name/\")`", " lists them.)")
+    manual = id === nothing ? nothing : findfirst(m -> m.id == id, manuals)
+    if manual !== nothing
+        ref = manuals[manual].ref
+        println(io, "(Its manual has $(length(manuals[manual].pages)) pages: ",
+                CLI[] ? "`jldocs show $ref/`" : "`lookup(\"$ref/\")`", " lists them.)")
+    end
     if outline
         for (i, li) in enumerate(p.headings)
             from = docstring_from(p, li)
@@ -265,6 +281,8 @@ end
 # `.md`, as in `GLMakie/explanations/backends/glmakie`.
 struct PackageManual
     name::String
+    id::PkgId
+    ref::String # how the command line names the package: its name, with its UUID if it needs it
     version::Union{Nothing,String}
     pages::Vector{ManualPage}
     refs::Vector{String}
@@ -280,24 +298,107 @@ end
 
 function find_package_manuals(cat::Catalog)
     out = PackageManual[]
-    seen = Set{String}()
-    add(name, dir, docs) = begin
-        (dir === nothing || isempty(docs.pages) || name in seen) && return
-        push!(seen, name)
+    seen = Set{PkgId}()
+    add(id, dir, docs) = begin
+        (dir === nothing || isempty(docs.pages) || id in seen) && return
+        push!(seen, id)
         root = common_dir(String[pg.path for pg in docs.pages])
-        refs = [string(name, '/', replace(chopsuffix(relpath(pg.path, root), ".md"), '\\' => '/')) for pg in docs.pages]
+        ref = package_ref(cat, id)
+        refs = [string(ref, '/', replace(chopsuffix(relpath(pg.path, root), ".md"), '\\' => '/')) for pg in docs.pages]
         v = installed_version(dir)
-        push!(out, PackageManual(name, v isa String ? v : nothing, docs.pages, refs))
+        push!(out, PackageManual(id.name, id, ref, v isa String ? v : nothing, docs.pages, refs))
     end
     # a standard library's manual is part of Julia's, at `stdlib/…`
     for p in cat.pkgs
         p.role in (:project, :direct, :indirect) && !is_stdlib(p.id) || continue
-        add(p.id.name, pkgdir(p.mod), package_docs(cat, p.mod))
+        add(p.id, pkgdir(p.mod), package_docs(cat, p.mod))
     end
     for id in cat.unloaded
-        is_stdlib(id) || add(id.name, unloaded_dir(id), unloaded_docs(cat, id))
+        is_stdlib(id) || add(id, unloaded_dir(id), unloaded_docs(cat, id))
     end
     return out
+end
+
+## Packages with one name ##
+
+# A project can have two packages with one name and different UUIDs, such as a fork beside the
+# package it was forked from. The command line tells them apart as Pkg does, by the UUID after
+# the name, as in `Example=7876af07`. Any start of the UUID that only one of them has will do.
+
+# Whether the catalog lists package `id`: it is loaded, or the project depends on it.
+is_listed(cat::Catalog, id::PkgId) = id in cat.unloaded || any(p -> p.id == id, cat.pkgs)
+
+# Whether the project depends on package `id`, or is it. A name alone means this one.
+is_direct(cat::Catalog, id::PkgId) =
+    id in cat.unloaded || any(p -> p.id == id && p.role in (:project, :direct), cat.pkgs)
+
+# How many characters of the UUID of `id` tell it from `other`, as Pkg shows at least eight
+# of, or 0 if `other` is not another package of its name.
+function telling_length(id::PkgId, other::PkgId)
+    (other.name == id.name && other.uuid !== nothing && other.uuid != id.uuid) || return 0
+    a, b = string(id.uuid), string(other.uuid)
+    return max(8, something(findfirst(i -> a[i] != b[i], 1:ncodeunits(a)), ncodeunits(a)))
+end
+
+uuid_ref(id::PkgId, n::Int) = string(id.name, '=', first(string(id.uuid), max(n, 8)))
+
+"""
+    package_ref(cat, id) -> String
+
+How the command line names package `id`: by its name, and if the catalog lists another package
+of that name, by the start of its UUID too, as in `Example=7876af07`.
+"""
+function package_ref(cat::Catalog, id::PkgId)
+    id.uuid === nothing && return id.name
+    n = 0
+    for p in cat.pkgs
+        n = max(n, telling_length(id, p.id))
+    end
+    for other in cat.unloaded
+        n = max(n, telling_length(id, other))
+    end
+    return n == 0 ? id.name : uuid_ref(id, n)
+end
+
+# The name of module `m`, or `name`, which is a name in it, as the command line takes it: with
+# the UUID of its package where `package_ref` has it.
+function agent_name(cat::Catalog, m::Module, name::String=display_name(m))
+    id = PkgId(Base.moduleroot(m))
+    ref = package_ref(cat, id)
+    return ref == id.name ? name : string(ref, chopprefix(name, id.name))
+end
+
+"""
+    split_package(cat, query) -> (query, pick)
+
+Take the UUID off the name of the package that `query` starts with, as in
+`Example=7876af07.hello`. `pick` is the package that the UUID is the start of, or `nothing`
+when the query has none, or else what is wrong with it, as text. The package is looked for in
+the catalog and then in the manifest of the project, where a dependency of a dependency is.
+"""
+function split_package(cat::Catalog, query::AbstractString)
+    s = String(strip(query))
+    m = match(r"^([A-Za-z_]\w*)=([0-9a-fA-F-]+)(?=$|[./#])", s)
+    m === nothing && return s, nothing
+    name, start = String(m[1]), String(m[2])
+    ids = PkgId[p.id for p in cat.pkgs if p.id.name == name && p.id.uuid !== nothing]
+    append!(ids, PkgId[id for id in cat.unloaded if id.name == name])
+    for e in manifest_entries(name)
+        uuid = get(e, "uuid", nothing)
+        uuid = uuid isa String ? tryparse(UUID, uuid) : nothing
+        uuid === nothing || push!(ids, PkgId(uuid, name))
+    end
+    # something else with a `=` in it, which is looked for as it is
+    isempty(unique!(ids)) && return s, nothing
+    digits(x) = replace(lowercase(string(x)), '-' => "")
+    found = PkgId[id for id in ids if startswith(digits(id.uuid), digits(start))]
+    rest = name * s[ncodeunits(m.match)+1:end]
+    length(found) == 1 && return rest, found[1]
+    ref(id) = uuid_ref(id, maximum(other -> telling_length(id, other), ids))
+    return rest, isempty(found) ?
+        "No package $name of the project has a UUID that starts with $start. There is $(join(map(ref, ids), ", ")).\n" :
+        "$(length(found)) packages $name of the project have a UUID that starts with $start: " *
+        "$(join(map(ref, found), ", ")). Give more of it.\n"
 end
 
 installed_version(dir::String) = get(package_project(dir), "version", nothing)
@@ -314,17 +415,19 @@ function common_dir(paths::Vector{String})
 end
 
 # What an address in a package's manual names: its page, at a heading after `#`, or the whole
-# manual for `GLMakie/` or `GLMakie/manual`. `nothing` when it is not one.
-function package_place(cat::Catalog, query::String)
+# manual for `GLMakie/` or `GLMakie/manual`. `nothing` when it is not one. Of several packages
+# of the name, it is the one that `pick` is, or else the one the project depends on.
+function package_place(cat::Catalog, query::String, pick::Union{Nothing,PkgId}=nothing)
     m = match(r"^([A-Za-z_]\w*)/([^#]*?)(?:#(.*))?$", strip(query))
     m === nothing && return nothing
     name, page, anchor = String(m[1]), chopsuffix(strip(String(m[2]), '/'), ".md"), something(m[3], "")
     manuals = package_manuals(cat)
-    i = findfirst(pm -> pm.name == name, manuals)
+    named(pm) = pm.name == name && (pick === nothing || pm.id == pick)
+    i = something(findfirst(pm -> named(pm) && is_direct(cat, pm.id), manuals), findfirst(named, manuals), Some(nothing))
     i === nothing && return nothing
     pm = manuals[i]
     page in ("", "manual") && return pm
-    j = findfirst(==("$name/$page"), pm.refs)
+    j = findfirst(==("$(pm.ref)/$page"), pm.refs)
     return j === nothing ? nothing : ManualTarget(pm.pages[j].path, String(anchor))
 end
 
@@ -340,7 +443,7 @@ end
 # The pages of a package's manual, each with what `lookup` takes for it.
 function package_manual_index(m::PackageManual)
     io = IOBuffer()
-    println(io, "# The manual of ", m.name, m.version === nothing ? "" : "  ($(m.name) $(m.version))")
+    println(io, "# The manual of ", m.ref, m.version === nothing ? "" : "  ($(m.name) $(m.version))")
     group = nothing
     for (pg, ref) in zip(m.pages, m.refs)
         if pg.group != group
@@ -374,9 +477,9 @@ function find_docs(query::AbstractString; text::Bool=false, internal::Bool=false
     names = search(b.cat, query; internal, limit)
     text && (names = unique!(vcat(names, search_text(b.cat, query; internal, limit))))
     for e in first(names, limit)
-        print(io, display_name(e), "  ", e.kind, ", ", e.vis)
+        print(io, agent_name(b.cat, e.mod, display_name(e)), "  ", e.kind, ", ", e.vis)
         from = reexported_from(e)
-        from === nothing || print(io, ", from ", display_name(from))
+        from === nothing || print(io, ", from ", agent_name(b.cat, from))
         e.documented || print(io, ", undocumented")
         println(io)
     end
@@ -454,7 +557,9 @@ function list_names(mod::Union{Module,AbstractString}; internal::Bool=false, loa
     FOUND[] = true
     b = headless_browser()
     if !(mod isa Module)
-        t = agent_target(b.cat, String(mod), Main)
+        q, pick = split_package(b.cat, mod)
+        pick isa String && (FOUND[] = false; return pick)
+        t = agent_target(b.cat, q, Main, pick)
         if t isa LoadTarget && isempty(t.then)
             load || loads_quickly(t.id) ||
                 return "$(mod) is not precompiled, so it was not loaded. To precompile and load it, $(load_hint()).\n"
@@ -465,7 +570,7 @@ function list_names(mod::Union{Module,AbstractString}; internal::Bool=false, loa
         mod = t.mod
     end
     io = IOBuffer()
-    println(io, "# ", display_name(mod))
+    println(io, "# ", agent_name(b.cat, mod))
     dir = pkgdir(mod)
     dir === nothing || println(io, "Path: ", dir)
     kind = :none
@@ -477,7 +582,7 @@ function list_names(mod::Union{Module,AbstractString}; internal::Bool=false, loa
         end
         print(io, "  ", e.name, "  ", e.vis)
         from = reexported_from(e)
-        from === nothing || print(io, ", from ", display_name(from))
+        from === nothing || print(io, ", from ", agent_name(b.cat, from))
         e.documented || print(io, ", undocumented")
         println(io)
     end
@@ -485,23 +590,30 @@ function list_names(mod::Union{Module,AbstractString}; internal::Bool=false, loa
 end
 
 # What `query` names: a place, a file of a manual, or a name in a loaded module or in a
-# package of the active project that is not loaded.
-function agent_target(cat::Catalog, query::String, ctx::Module)
+# package of the active project that is not loaded. With `pick`, it is a name in that package.
+function agent_target(cat::Catalog, query::String, ctx::Module, pick::Union{Nothing,PkgId}=nothing)
     s = strip(query)
     isempty(s) && return nothing
+    pick === nothing || return picked_target(pick, s)
     t = place_target(s, cat)
     t === nothing || return t
     m = match(r"^(.+?\.md)(?:#(.*))?$", s)
     m !== nothing && isfile(m[1]) && return ManualTarget(normpath(m[1]), something(m[2], ""))
     parts = split(s, '.')
     if is_name_path(parts)
-        roots = Module[ctx, Main, Base, Core]
-        for m in values(Base.loaded_modules)
-            nameof(m) === Symbol(parts[1]) && pushfirst!(roots, m)
-        end
         unloaded = findfirst(id -> id.name == parts[1], cat.unloaded)
         load = unloaded === nothing ? nothing :
             LoadTarget(cat.unloaded[unloaded], length(parts) > 1 ? String(s) : "")
+        # The name alone is the package that the project depends on, as it is for `import`. A
+        # loaded package of that name can be another, which only its UUID picks.
+        roots = Module[]
+        if load === nothing
+            for m in values(Base.loaded_modules)
+                nameof(m) === Symbol(parts[1]) && push!(roots, m)
+            end
+            sort_by!(roots, m -> !is_direct(cat, PkgId(m)))
+        end
+        push!(roots, ctx, Main, Base, Core)
         for root in unique!(roots)
             t = name_target(root, root === ctx || root === Main || root === Base || root === Core ?
                                   parts : parts[2:end])
@@ -520,6 +632,15 @@ function agent_target(cat::Catalog, query::String, ctx::Module)
         end
     end
     return place_target("docs: " * s, cat)
+end
+
+# What the name `s` is in package `pick`, which it starts with the name of. A package that is
+# not loaded is loaded first.
+function picked_target(pick::PkgId, s::AbstractString)
+    parts = split(s, '.')
+    named = is_name_path(parts)
+    Base.root_module_exists(pick) || return LoadTarget(pick, named && length(parts) > 1 ? String(s) : "")
+    return named ? name_target(Base.root_module(pick), parts[2:end]) : nothing
 end
 
 function name_target(root::Module, parts)
@@ -565,10 +686,13 @@ function link_numbers(b::Browser, key, p::Page, lines)
 end
 
 function link_ref(b::Browser, key, @nospecialize(t))
-    t isa NameTarget && return string(display_name(t.mod), '.', t.name)
-    t isa ModuleTarget && return display_name(t.mod)
+    t isa NameTarget && return agent_name(b.cat, t.mod, string(display_name(t.mod), '.', t.name))
+    t isa ModuleTarget && return agent_name(b.cat, t.mod)
     t isa URLTarget && return t.url
-    t isa LoadTarget && return isempty(t.then) ? t.id.name : t.then
+    if t isa LoadTarget
+        name = isempty(t.then) || startswith(t.then, t.id.name * ".") ? t.then : string(t.id.name, '.', t.then)
+        return string(package_ref(b.cat, t.id), chopprefix(name, t.id.name))
+    end
     if t isa ManualTarget
         # what `show` takes, then the file, which can be read directly
         ref = page_ref(t.path)
@@ -651,6 +775,10 @@ const AGENT_USAGE = """
     them. A package that is not loaded has a page of what its source documents, such as the
     README, and `find` does not know its names.
     Julia's manual is downloaded the first time it is needed.
+
+    Two packages of the project with one name are told apart as Pkg does, by the UUID after the
+    name, or any start of it that only one of them has: `Example=7876af07.hello`. The name alone
+    is the one the project depends on. `find` and the links of a page write such names so.
 
     Several commands in one call, split by `+` or one a line for `-`, start Julia and load the
     packages once, which is most of the time a command takes. Each answer then starts with a

@@ -262,8 +262,13 @@ function package_deps(m::Module)
     return parse_uuids(get(package_project(dir), "deps", nothing))
 end
 
-# Load package `id` into `Main`, as `import` at the prompt does.
-import_package(id::PkgId) = Core.eval(Main, Expr(:import, Expr(:., Symbol(id.name))))
+# Load package `id`. A package that the project depends on is loaded into `Main`, as `import` at
+# the prompt does. Any other, such as a dependency of a dependency, has no name there, and may
+# share its name with one that has, so it is loaded by its UUID.
+function import_package(id::PkgId)
+    Base.identify_package(id.name) == id || return dynamic(Base.require)(id)
+    return Core.eval(Main, Expr(:import, Expr(:., Symbol(id.name))))
+end
 
 function extension_parent(id::PkgId)
     parents = @lock Base.require_lock get(Base.EXT_PRIMED, id, nothing)
