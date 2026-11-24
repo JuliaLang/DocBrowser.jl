@@ -2072,6 +2072,13 @@ end
     @test DocBrowser.resolve_ref("float = false", Main, Catalog()) === nothing
     @test DocBrowser.resolve_ref("@time f()", Main, Catalog()) !== nothing
     @test DocBrowser.lookup("manual/arrays#Broadcasting") == section
+    # A package of the project that is not loaded is not hidden by an internal name of Base,
+    # as the package Downloads would be by `Base.Downloads`.
+    cat = Catalog()
+    id = Base.PkgId(Base.UUID("5d9c9a4e-3b0e-4f53-9c1e-6c1f2a7b8d21"), "IRShow")
+    push!(cat.unloaded, id)
+    @test DocBrowser.agent_target(cat, "IRShow", Main) == DocBrowser.LoadTarget(id, "")
+    @test DocBrowser.agent_target(cat, "IRShow.f", Main) == DocBrowser.LoadTarget(id, "f")
     # Searching, and the names of a module.
     @test occursin("Base.sort!  function, exported", DocBrowser.find_docs("sort!"))
     names = DocBrowser.list_names(Fixture)
