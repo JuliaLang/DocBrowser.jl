@@ -143,12 +143,14 @@ jldocs show Base.sort! --brief           # just each docstring's signature and f
 jldocs show manual/arrays --outline      # the headings of a long page...
 jldocs show manual/arrays --section 21   # ...and one of them
 jldocs show GLMakie/                     # the pages of a package's manual
-jldocs names Plots --load                # the names of a module
+jldocs names Plots                       # the names of a module
 jldocs find sort + show Base.sort!       # several commands, for one start of Julia
 ```
 
-It works in the project of the current directory, or the one `--project PATH` names. It does
-not load the project's packages unless asked to with `--load`, since that runs their code. Without
+It works in the project of the current directory, or the one `--project PATH` names. A package
+a name is asked for in, such as Plots for `jldocs show Plots.plot`, is loaded, which runs its code,
+unless it would have to be precompiled first. `--load` precompiles it too, and loads all the
+project's packages for `find` and for a name found only once they are loaded. Without
 the app, `julia --project -m DocBrowser ...` does the same in an environment that has DocBrowser,
 and in Julia `DocBrowser.find_docs`, `DocBrowser.lookup` and `DocBrowser.list_names` return the
 same text.

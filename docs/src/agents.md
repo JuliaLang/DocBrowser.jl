@@ -38,11 +38,12 @@ Code, copy its directory to `~/.claude/skills/julia-docs`.
 | `jldocs show manual/arrays --outline` | the headings of a long page |
 | `jldocs show manual/arrays --section 21` | one of those headings |
 | `jldocs show GLMakie/` | the pages of a package's manual |
-| `jldocs names Plots --load` | the names in a module |
+| `jldocs names Plots` | the names in a module |
 | `jldocs find sort + show Base.sort!` | several answers for one start of Julia |
 
 - It works in the project of the current directory, or `--project PATH`.
-- It doesn't load your packages (which runs their code) unless you add `--load`.
+- It loads a package that a name is asked for in, such as Plots for `Plots.plot`, unless it would have
+  to be precompiled first. `--load` does that too, and loads all your packages for `find` and bare names.
 - Every page gives its local file as `Path:`, so an agent can also read or `grep` it.
 - Several commands, split by `+` or one a line from standard input with `jldocs -`, start Julia
   and load packages once. Each answer starts with a `## jldocs <command>` line, and `--load` in one is for all.

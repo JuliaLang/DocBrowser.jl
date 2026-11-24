@@ -465,6 +465,22 @@ end
             DocBrowser.HEADLESS[] = nothing
             @test occursin("names of a package of the project that is not loaded were not searched: $bare",
                            DocBrowser.lookup("bare_f"))
+            # A name found without them does not load the packages of the project, and a name in
+            # a package that would have to be precompiled does not load it without `--load`.
+            redirect_stdout(() -> DocBrowser.main(["show", "Base.sort!", "--load", "--brief"]), devnull)
+            @test occursin("$bare is not precompiled", DocBrowser.lookup("$bare.bare_f"))
+            @test !haskey(Base.loaded_modules, Base.PkgId(bareuuid, bare))
+            # A name in a package that is precompiled loads it.
+            quick, quickuuid = "DocBrowserLoadQuick", Base.UUID("5d9c9a4e-3b0e-4f53-9c1e-6c1f2a7b8d19")
+            mkpath(joinpath(dir, quick, "src"))
+            write(joinpath(dir, quick, "Project.toml"), "name = \"$quick\"\nuuid = \"$quickuuid\"\n")
+            write(joinpath(dir, quick, "src", "$quick.jl"), "module $quick\n\"Found quick.\"\nquick_f() = 1\nend\n")
+            Base.set_active_project(joinpath(dir, quick, "Project.toml"))
+            Base.compilecache(Base.PkgId(quickuuid, quick))
+            DocBrowser.HEADLESS[] = nothing
+            @test occursin("Found quick.", DocBrowser.lookup("$quick.quick_f"))
+            Base.set_active_project(joinpath(dir, bare, "Project.toml"))
+            DocBrowser.HEADLESS[] = nothing
             # `--load` in a later command loads the packages for the ones before it too.
             out = mktemp() do path, io
                 redirect_stdout(() -> DocBrowser.main(["find", "bare_f", "+", "show", "bare_f", "--load"]), io)
@@ -2106,7 +2122,7 @@ end
     id = Base.PkgId(Base.UUID("5d9c9a4e-3b0e-4f53-9c1e-6c1f2a7b8d21"), "IRShow")
     push!(cat.unloaded, id)
     @test DocBrowser.agent_target(cat, "IRShow", Main) == DocBrowser.LoadTarget(id, "")
-    @test DocBrowser.agent_target(cat, "IRShow.f", Main) == DocBrowser.LoadTarget(id, "f")
+    @test DocBrowser.agent_target(cat, "IRShow.f", Main) == DocBrowser.LoadTarget(id, "IRShow.f")
     # Searching, and the names of a module.
     @test occursin("Base.sort!  function, exported", DocBrowser.find_docs("sort!"))
     names = DocBrowser.list_names(Fixture)
