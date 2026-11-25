@@ -1,7 +1,7 @@
 name = "DocBrowser"
 uuid = "208986ce-fd7f-47a4-b86f-e50b7a34e96d"
 authors = ["Ian Butterworth <i.r.butterworth@gmail.com>", "Kristoffer Carlsson <kcarlsson89@gmail.com>"]
-version = "0.1.3"
+version = "0.1.4"
 
 [apps]
 jldocs = { julia_flags = ["--startup-file=no"] }
