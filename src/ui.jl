@@ -94,7 +94,7 @@ Base.@kwdef mutable struct Browser
     flags::Dict{Any,Set{Symbol}} = Dict{Any,Set{Symbol}}() # the parts of each page that are unfolded
     searchmode::Symbol = :all    # what a search looks in: :all, or only :names or :text
     layout::Symbol = LAYOUT[]    # :auto, or a number of panes: :one, :two or :three
-    color::Bool = get(out, :color, true)::Bool || REPL.Terminals.hascolor(term)
+    color::Bool = has_colour(term)
     # Text selected in the documentation, from where the drag started to where it is now,
     # each as a page line and a column.
     sel::Union{Nothing,NTuple{4,Int}} = nothing
@@ -144,6 +144,20 @@ Base.@kwdef mutable struct Browser
     # the rows of each section of the sidebar, for the catalog and manual they were found in
     sections::Tuple{Any,Any,Dict{Symbol,Vector{SideRow}}} = (nothing, nothing, Dict{Symbol,Vector{SideRow}}())
     fetch_note::String = "" # what is being downloaded in the background, for the footer
+    # Pictures, where the terminal draws them. `answered` is whether the terminal has said all
+    # it will about drawing them, and `cell` the height and width of one of its cells.
+    answered::Bool = true
+    cell::Tuple{Int,Int} = (2, 1)
+    # The pictures the terminal has taken, and those it has yet to answer for, in the order
+    # they were sent, at the time `sent`. `gave_up` is whether that is too long ago to
+    # expect an answer still.
+    pictures::Vector{Picture} = Picture[]
+    awaited::Vector{Picture} = Picture[]
+    sent::Float64 = 0.0
+    gave_up::Bool = false
+    # Where pictures go in the frame being drawn, and where they are on the screen.
+    placements::Vector{Placement} = Placement[]
+    shown::Vector{Placement} = Placement[]
 end
 
 function Browser(term::REPL.Terminals.TextTerminal, cat::Catalog=Catalog())
@@ -1022,6 +1036,10 @@ function doc_width(b::Browser)
     return max(10, b.width - 1)
 end
 
+# `pic` if the terminal has taken it, or was sent it and should still answer. The terminal
+# reads the picture before whatever is written next, so it is drawn without waiting.
+expected(b::Browser, pic::Picture) = pic in b.pictures || !b.gave_up && pic in b.awaited ? pic : nothing
+
 page_flags(b::Browser, key) = dynamic(get)(b.flags, key, Set{Symbol}())::Set{Symbol}
 # The same set, kept for the page, so that changes to it stay.
 page_flags!(b::Browser, @nospecialize(key)) = dynamic(get!)(Set{Symbol}, b.flags, key)::Set{Symbol}
@@ -1035,7 +1053,7 @@ function page(b::Browser, key, width::Int)
             key isa SectionTarget ? section_page(b.cat, key.role, width) :
             key isa LoadTarget ? unloaded_page(b.cat, key.id, width, key.then) :
             key isa ManualTarget ? manual_page(b.cat, key.path, width) :
-            key === :start ? start_page(b.cat, width, b.tips[b.tip], b.tip) :
+            key === :start ? start_page(b.cat, width, b.tips[b.tip], b.tip, expected(b, logo_picture(b.cell))) :
             key === :help ? help_page(b.cat, width) : Page(PageBuilder(width))
         catch err
             err isa InterruptException && rethrow()
@@ -1385,9 +1403,15 @@ function header_bar(b::Browser)
     room = max(0, b.width - rw)
     rb = RowBuilder(b, 1, 1)
     put_seg!(rb, " ")
-    put_seg!(rb, "●", :REPL_DocBrowser_logo_red)
-    put_seg!(rb, "●", :REPL_DocBrowser_logo_green)
-    put_seg!(rb, "●", :REPL_DocBrowser_logo_purple)
+    mark = expected(b, mark_picture(b.cell))
+    if mark === nothing
+        put_seg!(rb, "●", :REPL_DocBrowser_logo_red)
+        put_seg!(rb, "●", :REPL_DocBrowser_logo_green)
+        put_seg!(rb, "●", :REPL_DocBrowser_logo_purple)
+    else
+        push!(b.placements, Placement(mark, 1, rb.col, 0, 1))
+        put_seg!(rb, " "^mark.cols)
+    end
     put_seg!(rb, " Julia docs ", :REPL_DocBrowser_title)
     proj = project_label()
     proj === nothing || put_seg!(rb, " ($proj)", :REPL_DocBrowser_dim, (:project,))
@@ -1727,6 +1751,12 @@ function draw_doc(b::Browser, x::Int, w::Int)
     # The cursor starts on the selected link, and stays in view when the page scrolls under it.
     b.doc_line == 0 && b.link in eachindex(p.spots) && (b.doc_line = p.spots[b.link].line)
     b.doc_line = clamp(b.doc_line, b.doc_scroll + 1, max(b.doc_scroll + 1, min(b.doc_scroll + n, length(p.lines))))
+    # A picture shows the rows of it that are in view, if the pane is wide enough for it.
+    for img in p.images
+        top, bottom = max(img.line, b.doc_scroll + 1), min(img.line + img.picture.rows - 1, b.doc_scroll + n)
+        expected(b, img.picture) !== nothing && top <= bottom && img.col + img.picture.cols - 1 <= pw || continue
+        push!(b.placements, Placement(img.picture, top - b.doc_scroll + 2, x + img.col - 1, top - img.line, bottom - top + 1))
+    end
     # A scroll bar in the last column, when the page does not fit.
     thumb = 0:-1
     if maxscroll > 0
@@ -1800,6 +1830,11 @@ end
 
 function frame(b::Browser)
     empty!(b.hits)
+    empty!(b.placements)
+    if !b.gave_up && !isempty(b.awaited) && time() - b.sent > PICTURE_WAIT
+        b.gave_up = true
+        filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with room for its picture
+    end
     H, W = b.height, b.width
     if H < 6 || W < 24
         return [rpad(first(i == 1 ? " Terminal too small" : "", W), W) for i in 1:H]
@@ -1826,9 +1861,13 @@ function frame(b::Browser)
     end
     styled_rows[1] = header_bar(b)
     styled_rows[H] = footer_bar(b)
+    under = copy(styled_rows)
     overlay_card!(b, styled_rows)
     overlay_console!(b, styled_rows)
     overlay_modal!(b, styled_rows)
+    # The terminal draws a picture over the text, so one in a row that a card or a panel
+    # covers is left out.
+    filter!(p -> all(r -> styled_rows[r] === under[r], p.row:p.row+p.rows-1), b.placements)
     for r in 1:H
         rows[r] = ansi(styled_rows[r], b.color)
     end
@@ -1851,10 +1890,23 @@ function draw(b::Browser)
     rows = StyledStrings.withfaces(() -> frame(b), b.faces)
     buf = IOBuffer()
     print(buf, "\e[?2026h\e[r")
+    written = false
     for (i, r) in enumerate(rows)
         if i > length(b.prev) || b.prev[i] != r
             print(buf, "\e[", i, ";1H\e[M\e[L\e[0m", r, "\e[0m")
+            written = true
         end
+    end
+    # A row is written by deleting its line, and what that does to a picture on it or below
+    # it is up to the terminal, so the pictures are all put back after any row is written.
+    if b.placements != b.shown || written && !isempty(b.shown)
+        for (n, p) in enumerate(b.shown)
+            hide_placement(buf, n, p)
+        end
+        for (n, p) in enumerate(b.placements)
+            show_placement(buf, n, p)
+        end
+        b.shown = copy(b.placements)
     end
     print(buf, "\e[?2026l")
     put(b, take!(buf))
@@ -1869,10 +1921,33 @@ const ENTER_SCREEN = "\e[?1049h\e[?25l\e[?7l\e[?1000h\e[?1002h\e[?1003h\e[?1006h
 const LEAVE_SCREEN = "\e[?2004l\e[?1006l\e[?1003l\e[?1002l\e[?1000l\e[?7h\e[?25h\e[?1049l"
 
 # Only a console has a raw mode, and only while it is open.
-function set_raw(b::Browser, raw::Bool)
-    b.term isa REPL.Terminals.TTYTerminal && !(b.in isa Base.TTY && isopen(b.in)) && return
-    dynamic(REPL.Terminals.raw!)(b.term, raw)
+function set_raw(term::REPL.Terminals.TextTerminal, raw::Bool)
+    term isa REPL.Terminals.TTYTerminal && !(term.in_stream isa Base.TTY && isopen(term.in_stream)) && return
+    dynamic(REPL.Terminals.raw!)(term, raw)
     return
+end
+
+has_colour(term::REPL.Terminals.TextTerminal) =
+    get(term.out_stream, :color, true)::Bool || REPL.Terminals.hascolor(term)
+
+# The browser that `browse` opens on `term`. The terminal is asked about pictures before the
+# browser is made, which takes a while, so that it has answered by the time there is a frame
+# to draw. Its answers must not be echoed, so it goes into raw mode first.
+function opening(term::REPL.Terminals.TextTerminal)
+    ask = has_colour(term) && images_enabled()
+    if ask
+        set_raw(term, true)
+        Base.inferencebarrier(write)(term.out_stream, GRAPHICS_QUERY)
+        Base.inferencebarrier(flush)(term.out_stream)
+    end
+    try
+        b = Browser(term)
+        b.answered = !ask
+        return b
+    catch
+        ask && set_raw(term, false)
+        rethrow()
+    end
 end
 
 # Asks whether the terminal is dark or light, now and when that changes, and for its
@@ -1880,20 +1955,25 @@ end
 scheme_reports(on::Bool) = on ? "\e[?2031h\e[?996n\e]11;?\e\\" : "\e[?2031l"
 
 function enter_screen(b::Browser)
-    set_raw(b, true)
+    set_raw(b.term, true)
     put(b, ENTER_SCREEN)
     rich_colours() && put(b, scheme_reports(true))
     flush(b.out)
     b.prev = String[]
+    empty!(b.shown) # the terminal keeps its pictures, but they are off the screen
 end
 
-function leave_screen(b::Browser, drain::Bool=false)
-    put(b, (rich_colours() ? scheme_reports(false) : "") * LEAVE_SCREEN)
+# `closing` is whether the browser is leaving for good, and not for a while, as for an editor.
+function leave_screen(b::Browser, closing::Bool=false)
+    buf = IOBuffer()
+    closing && foreach(pic -> forget_picture(buf, pic), vcat(b.pictures, b.awaited))
+    put(b, String(take!(buf)) * (rich_colours() ? scheme_reports(false) : "") * LEAVE_SCREEN)
     flush(b.out)
-    # Mouse reports sent before reporting stopped would reach the prompt. They must be read
-    # while still in raw mode, which delivers them without waiting for a newline.
-    drain && drain_mouse(b.in)
-    set_raw(b, false)
+    # Mouse reports sent before reporting stopped would reach the prompt, and so would the
+    # terminal's answer about a picture still on its way. They must be read while still in raw
+    # mode, which delivers them without waiting for a newline.
+    closing && drain_reports(b.in, isempty(b.awaited) || b.gave_up ? 0.05 : 1.0)
+    set_raw(b.term, false)
 end
 
 function check_size!(b::Browser)
@@ -2900,6 +2980,42 @@ function handle!(b::Browser, ev::SchemeEvent)
     return true
 end
 
+handle!(b::Browser, ev::CellSizeEvent) = (b.cell = (ev.height, ev.width); false)
+handle!(b::Browser, ::AnsweredEvent) = (b.answered = true; false)
+
+# The terminal said that it draws pictures, so it is sent the browser's. Or it answered for
+# one of them: it has taken it, and the picture can be drawn, or it could not draw it, and
+# the picture is left out from then on.
+function handle!(b::Browser, ev::GraphicsEvent)
+    if ev.id == GRAPHICS_QUERY_ID
+        ev.ok && isempty(b.awaited) && isempty(b.pictures) || return false
+        buf = IOBuffer()
+        for pic in (logo_picture(b.cell), mark_picture(b.cell))
+            send_picture(buf, pic, logo_pixels(pic))
+            push!(b.awaited, pic)
+        end
+        put(b, take!(buf))
+        Base.inferencebarrier(flush)(b.out)
+        b.sent, b.gave_up = time(), false
+        filter!(kv -> kv.first[1] !== :start, b.pages) # drawn without room for its picture
+        return true
+    end
+    # iTerm2 answers for a picture sent in pieces without its number. Answers come in the
+    # order the pictures were sent, so such an answer is for the first one still waiting.
+    i = ev.id != 0 ? findfirst(pic -> pic.id == ev.id, b.awaited) : isempty(b.awaited) ? nothing : 1
+    if i !== nothing
+        pic = popat!(b.awaited, i)
+        ev.ok && push!(b.pictures, pic)
+    else
+        # A picture it had taken, which it could not draw.
+        j = ev.ok ? nothing : findfirst(pic -> pic.id == ev.id, b.pictures)
+        j === nothing && return false
+        deleteat!(b.pictures, j)
+    end
+    filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with or without its picture
+    return true
+end
+
 # The terminal lost the mouse encoding asked for, so it is asked for again.
 function handle!(b::Browser, ::LegacyMouseEvent)
     b.live && put(b, "\e[?1000h\e[?1002h\e[?1003h\e[?1006h")
@@ -3236,7 +3352,7 @@ Returns the name or the code chosen with `y`, or `nothing`.
 """
 function browse(term::REPL.Terminals.TextTerminal = REPL.TerminalMenus.default_terminal();
                 query::Union{Nothing,AbstractString} = nothing, context::Module = Main)
-    b = Browser(term)
+    b = opening(term)
     query === nothing || (query = valid_text(query))
     if query !== nothing && !isempty(strip(query))
         t = something(place_target(query, b.cat), resolve_ref(query, context, b.cat), Some(nothing))
@@ -3256,7 +3372,7 @@ browse(x; context::Module = Main) = browse(REPL.TerminalMenus.default_terminal()
 
 function browse(term::REPL.Terminals.TextTerminal, x; context::Module = Main)
     x isa AbstractString && return browse(term; query = x, context)
-    b = Browser(term)
+    b = opening(term)
     t = object_target(x)
     if t !== nothing
         follow!(b, t)
@@ -3299,15 +3415,19 @@ function await_release(io::IO)
     end
 end
 
-# Read the mouse reports at the front of the input, and leave whatever else was typed for
-# the prompt.
-function drain_mouse(io::IO)
+# Read the terminal's reports at the front of the input, waiting `wait` seconds for each, and
+# leave whatever else was typed for the prompt.
+function drain_reports(io::IO, wait::Float64=0.05)
     try
-        while wait_bytes(io, 0.05)
+        while wait_bytes(io, wait)
             dynamic(mark)(io)
-            is_mouse = all(c -> wait_bytes(io, 0.03) && read(io, UInt8) == c, (0x1b, UInt8('['), UInt8('<')))
+            head = UInt8[]
+            while length(head) < 3 && wait_bytes(io, 0.03)
+                push!(head, read(io, UInt8))
+            end
             dynamic(reset)(io)
-            is_mouse || return
+            # a mouse report, or an answer about a picture
+            head == b"\e[<" || head == b"\e_G" || return
             read_event(io)
         end
     catch err
@@ -3468,10 +3588,20 @@ function run_screen!(b::Browser)
     enter_screen(b)
     b.live = true
     timer = watch_resize(() -> tick(b))
+    # The first frame waits for the terminal to say whether it draws pictures, so that it
+    # does not change as soon as it shows. The terminal was asked before the browser was
+    # made, so it has mostly answered already. A key typed ahead ends the wait, as it is
+    # meant for the frame.
+    settling = true
+    deadline = time() + SETTLE_WAIT
     pending = false
     try
-        @lock b.lock draw(b)
         while !b.quit
+            if settling
+                settling = !b.answered && time() < deadline && wait_bytes(b.in, deadline - time()) &&
+                    peek(b.in, UInt8) == 0x1b
+                settling || @lock b.lock (draw(b); pending = false)
+            end
             ev = try
                 read_event(b.in)
             catch err
@@ -3491,7 +3621,7 @@ function run_screen!(b::Browser)
                 b.quit && stay_open!(b)
                 # During a burst, of wheel turns or a held key, the frame is drawn once, at its end.
                 pending |= changed
-                if pending && !b.quit && bytesavailable(b.in) == 0
+                if pending && !settling && !b.quit && bytesavailable(b.in) == 0
                     in_world(draw, b)
                     pending = false
                 end

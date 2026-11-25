@@ -106,11 +106,13 @@ function theme_faces(theme::Symbol, bg)
         :REPL_DocBrowser_kind_macro    => Face(foreground=rgb(dark ? 0xd7a94b : 0x9a6a00)),
         :REPL_DocBrowser_kind_constant => Face(foreground=rgb(green)),
         :REPL_DocBrowser_kind_global   => Face(foreground=rgb(red)),
-        :REPL_DocBrowser_logo_red      => Face(foreground=rgb(0xcb3c33)),
-        :REPL_DocBrowser_logo_green    => Face(foreground=rgb(0x389826)),
-        :REPL_DocBrowser_logo_purple   => Face(foreground=rgb(0x9558b2)),
+        :REPL_DocBrowser_logo_red      => Face(foreground=rgb(LOGO_COLOURS.red)),
+        :REPL_DocBrowser_logo_green    => Face(foreground=rgb(LOGO_COLOURS.green)),
+        :REPL_DocBrowser_logo_purple   => Face(foreground=rgb(LOGO_COLOURS.purple)),
     )
 end
+
+const LOGO_COLOURS = (red=0xcb3c33, green=0x389826, purple=0x9558b2)
 
 rich_colours() = dynamic(Base.get_have_truecolor)()::Bool ||
     dynamic(get)(dynamic(Base.current_terminfo)(), :colors, 0)::Int >= 256
@@ -181,6 +183,7 @@ include("download.jl")
 include("fetchdocs.jl")
 include("start.jl")
 include("input.jl")
+include("graphics.jl")
 include("ui.jl")
 include("repl.jl")
 include("agent.jl")

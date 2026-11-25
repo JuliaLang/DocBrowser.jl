@@ -55,22 +55,46 @@ struct Spot
     target::Target
 end
 
+"""
+    Picture
+
+An image that the terminal holds under the number `id`, of `width` by `height` pixels. It is
+drawn over `cols` by `rows` cells.
+"""
+struct Picture
+    id::Int
+    cols::Int
+    rows::Int
+    width::Int
+    height::Int
+end
+
+# A picture on a page, by the line and column of its top left cell. The page leaves the cells
+# under it blank.
+struct PageImage
+    line::Int
+    col::Int
+    picture::Picture
+end
+
 struct Page
     lines::Vector{AnnotatedString{String}}
     spots::Vector{Spot}
     source::Union{Nothing,SourceTarget}
     headings::Vector{Int}
+    images::Vector{PageImage}
 end
 
 struct PageBuilder
     lines::Vector{AnnotatedString{String}}
     spots::Vector{Spot}
     width::Int
+    images::Vector{PageImage}
 end
-PageBuilder(width::Int) = PageBuilder(AnnotatedString{String}[], Spot[], width)
+PageBuilder(width::Int) = PageBuilder(AnnotatedString{String}[], Spot[], width, PageImage[])
 
 Page(pb::PageBuilder, source=nothing) =
-    Page(pb.lines, sort_by!(pb.spots, s -> (s.line, first(s.cols))), source, heading_lines(pb.lines))
+    Page(pb.lines, sort_by!(pb.spots, s -> (s.line, first(s.cols))), source, heading_lines(pb.lines), pb.images)
 
 is_heading_face(v) = v isa Symbol && startswith(String(v), "markdown_h") && v !== :markdown_hrule
 

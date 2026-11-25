@@ -123,6 +123,8 @@ browser looked and why it found no more.
   The default is DuckDuckGo.
 - `JULIA_DOCBROWSER_AUTODOWNLOAD`: `no` stops the browser from downloading packages' manuals
   by itself. The button on a package's page still does.
+- `JULIA_DOCBROWSER_IMAGES`: `no` stops the browser from drawing pictures, such as the Julia
+  logo, in terminals that have the kitty graphics protocol. It draws them with text instead.
 - `GITHUB_TOKEN`: raises GitHub's limit on the requests that finding those manuals makes.
 
 ## For AI agents

@@ -51,7 +51,36 @@ lost the SGR encoding while still reporting, as VS Code's does when it reattache
 """
 struct LegacyMouseEvent end
 
-const Event = Union{KeyEvent,MouseEvent,PasteEvent,SchemeEvent,LegacyMouseEvent}
+"""
+    GraphicsEvent(id, ok)
+
+The terminal's answer about the picture numbered `id`, or about whether it draws pictures at
+all: it has done what was asked, or could not.
+"""
+struct GraphicsEvent
+    id::Int
+    ok::Bool
+end
+
+"""
+    CellSizeEvent(height, width)
+
+The terminal said how many pixels tall and wide one of its cells is.
+"""
+struct CellSizeEvent
+    height::Int
+    width::Int
+end
+
+"""
+    AnsweredEvent()
+
+The terminal's device attributes. The browser asks for them last, and every terminal
+answers, so whatever else the terminal had to say has arrived before this.
+"""
+struct AnsweredEvent end
+
+const Event = Union{KeyEvent,MouseEvent,PasteEvent,SchemeEvent,LegacyMouseEvent,GraphicsEvent,CellSizeEvent,AnsweredEvent}
 
 const SHIFT, ALT, CTRL = 1, 2, 4
 
@@ -93,10 +122,10 @@ function read_escape(io::IO)
     wait_bytes(io, SEQUENCE_WAIT[]) || return KeyEvent(:escape)
     c2 = read(io, Char)
     # A terminal sends a whole sequence at once. With nothing after it, this is Alt and a key.
-    if c2 in "[O]P" && wait_bytes(io, SEQUENCE_WAIT[])
+    if c2 in "[O]P_" && wait_bytes(io, SEQUENCE_WAIT[])
         c2 == '[' && return read_csi(io)
         c2 == 'O' && return read_ss3(io)
-        return skip_string(io)
+        return skip_string(io, c2)
     end
     if c2 == '\e'
         # Some terminals send Alt and an arrow as Escape before the arrow's own sequence.
@@ -123,9 +152,10 @@ function read_ss3(io::IO)
     return key === nothing ? nothing : KeyEvent(key)
 end
 
-# OSC and DCS strings (such as replies to colour queries) end with BEL or ESC \. The reply
-# with the background colour is kept.
-function skip_string(io::IO)
+# OSC, DCS and APC strings (such as replies to colour queries) end with BEL or ESC \. `kind`
+# is the character that started the string. The replies with the background colour and about
+# pictures are kept.
+function skip_string(io::IO, kind::Char)
     buf = IOBuffer()
     while true
         # Give up if the string stops, so that it cannot swallow what is typed next.
@@ -138,7 +168,12 @@ function skip_string(io::IO)
         end
         position(buf) < 160 && write(buf, c)
     end
-    m = match(r"^11;([\x21-\x7e]{1,100})$", String(take!(buf)))
+    body = String(take!(buf))
+    if kind == '_'
+        m = match(r"^Gi=(\d{1,10})[^;]*;(.*)$", body)
+        return m === nothing ? nothing : GraphicsEvent(parse(Int, m[1]), m[2] == "OK")
+    end
+    m = match(r"^11;([\x21-\x7e]{1,100})$", body)
     return m === nothing ? nothing : SchemeEvent(nothing, m[1])
 end
 
@@ -163,12 +198,14 @@ function read_csi(io::IO)
     if private == '?' && final == 'n' && body in ("997;1", "997;2")
         return SchemeEvent(body == "997;1", "")
     end
+    private == '?' && final == 'c' && return AnsweredEvent()
     params = Int[something(tryparse(Int, p), 0) for p in split(body, ';'; keepempty=true)]
     if private == '<' && final in ('M', 'm')
         occursin(r"^\d+;\d+;\d+$", body) || return nothing
         return mouse_event(params, final == 'M')
     end
     private == '\0' || return nothing
+    final == 't' && length(params) == 3 && params[1] == 6 && all(>(0), params) && return CellSizeEvent(params[2], params[3])
     if final == '~'
         isempty(params) && return nothing
         params[1] == 200 && return read_paste(io)

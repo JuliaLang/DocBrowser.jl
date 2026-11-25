@@ -45,7 +45,8 @@ function precompile_workload()
     end
     for ev in ("\e[<35;40;8M", "\e[<0;40;8M", "\e[<0;40;8m", "\e[<0;5;5M", "\e[<0;5;5m",
                "\e[<65;90;9M", "\e[<64;90;9M", "\e[<0;100;1M", "\e[200~iter\e[201~", "\e[1;3D",
-               "\e]11;rgb:0000/0000/0000\e\\", "\e[?62c")
+               "\e]11;rgb:0000/0000/0000\e\\", "\e[?62c",
+               "\e[6;15;7t", "\e_Gi=$GRAPHICS_QUERY_ID;OK\e\\", "\e_Gi=$(logo_picture((15, 7)).id);OK\e\\")
         e = read_event(IOBuffer(ev))
         e === nothing || handle!(b, e)
         frame(b)
