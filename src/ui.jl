@@ -155,6 +155,9 @@ Base.@kwdef mutable struct Browser
     awaited::Vector{Picture} = Picture[]
     sent::Float64 = 0.0
     gave_up::Bool = false
+    # Whether the terminal said it draws pictures, and the numbers of those it could not draw.
+    draws::Bool = false
+    refused::Set{Int} = Set{Int}()
     # Where pictures go in the frame being drawn, and where they are on the screen.
     placements::Vector{Placement} = Placement[]
     shown::Vector{Placement} = Placement[]
@@ -1038,7 +1041,16 @@ end
 
 # `pic` if the terminal has taken it, or was sent it and should still answer. The terminal
 # reads the picture before whatever is written next, so it is drawn without waiting.
-expected(b::Browser, pic::Picture) = pic in b.pictures || !b.gave_up && pic in b.awaited ? pic : nothing
+expected(b::Browser, pic::Picture) = has_picture(b.pictures, pic) || !b.gave_up && has_picture(b.awaited, pic) ? pic : nothing
+
+# A picture from a file is the same one at any size.
+has_picture(pics::Vector{Picture}, pic::Picture) = any(p -> p.id == pic.id, pics)
+
+# What pages need to make room for pictures from files, if the terminal draws them.
+picture_support(b::Browser) = b.draws && !b.gave_up ? PictureSupport(b.cell, b.refused) : nothing
+
+# The pages whose pictures, or room for them, change with what the terminal says.
+forget_picture_pages!(b::Browser) = filter!(kv -> !(kv.first[1] === :start || kv.first[1] isa ManualTarget), b.pages)
 
 page_flags(b::Browser, key) = dynamic(get)(b.flags, key, Set{Symbol}())::Set{Symbol}
 # The same set, kept for the page, so that changes to it stay.
@@ -1052,7 +1064,7 @@ function page(b::Browser, key, width::Int)
             key isa ModuleTarget ? module_page(b.cat, key.mod, width) :
             key isa SectionTarget ? section_page(b.cat, key.role, width) :
             key isa LoadTarget ? unloaded_page(b.cat, key.id, width, key.then) :
-            key isa ManualTarget ? manual_page(b.cat, key.path, width) :
+            key isa ManualTarget ? manual_page(b.cat, key.path, width, picture_support(b)) :
             key === :start ? start_page(b.cat, width, b.tips[b.tip], b.tip, expected(b, logo_picture(b.cell))) :
             key === :help ? help_page(b.cat, width) : Page(PageBuilder(width))
         catch err
@@ -1754,7 +1766,9 @@ function draw_doc(b::Browser, x::Int, w::Int)
     # A picture shows the rows of it that are in view, if the pane is wide enough for it.
     for img in p.images
         top, bottom = max(img.line, b.doc_scroll + 1), min(img.line + img.picture.rows - 1, b.doc_scroll + n)
-        expected(b, img.picture) !== nothing && top <= bottom && img.col + img.picture.cols - 1 <= pw || continue
+        top <= bottom || continue
+        isempty(img.file) || send_file_picture(b, img)
+        expected(b, img.picture) !== nothing && img.col + img.picture.cols - 1 <= pw || continue
         push!(b.placements, Placement(img.picture, top - b.doc_scroll + 2, x + img.col - 1, top - img.line, bottom - top + 1))
     end
     # A scroll bar in the last column, when the page does not fit.
@@ -1833,7 +1847,7 @@ function frame(b::Browser)
     empty!(b.placements)
     if !b.gave_up && !isempty(b.awaited) && time() - b.sent > PICTURE_WAIT
         b.gave_up = true
-        filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with room for its picture
+        forget_picture_pages!(b)
     end
     H, W = b.height, b.width
     if H < 6 || W < 24
@@ -1959,8 +1973,12 @@ function enter_screen(b::Browser)
     put(b, ENTER_SCREEN)
     rich_colours() && put(b, scheme_reports(true))
     # Entering the screen throws away the pictures in some terminals, such as Ghostty, so
-    # those the terminal had are sent again.
-    isempty(b.pictures) || send_logos!(b, splice!(b.pictures, eachindex(b.pictures)))
+    # those the terminal had are sent again: the logos now, and images when they come into view.
+    if !isempty(b.pictures)
+        logos = filter(p -> p.id in (logo_picture(b.cell).id, mark_picture(b.cell).id), b.pictures)
+        empty!(b.pictures)
+        isempty(logos) || send_logos!(b, logos)
+    end
     flush(b.out)
     b.prev = String[]
     empty!(b.shown)
@@ -2996,15 +3014,35 @@ function send_logos!(b::Browser, pics::Vector{Picture})
     b.sent, b.gave_up = time(), false
 end
 
+# Sends the picture of an image file the first time it comes into view, so that a long page
+# does not send all of its pictures at once.
+function send_file_picture(b::Browser, img::PageImage)
+    pic = img.picture
+    (has_picture(b.pictures, pic) || has_picture(b.awaited, pic) || pic.id in b.refused) && return
+    data = @attempt read(img.file) UInt8[]
+    if isempty(data)
+        push!(b.refused, pic.id)
+        forget_picture_pages!(b)
+        return
+    end
+    buf = IOBuffer()
+    send_picture(buf, pic, data; png=true)
+    put(b, take!(buf))
+    isempty(b.awaited) && (b.sent = time())
+    push!(b.awaited, pic)
+    return
+end
+
 # The terminal said that it draws pictures, so it is sent the browser's. Or it answered for
 # one of them: it has taken it, and the picture can be drawn, or it could not draw it, and
 # the picture is left out from then on.
 function handle!(b::Browser, ev::GraphicsEvent)
     if ev.id == GRAPHICS_QUERY_ID
         ev.ok && isempty(b.awaited) && isempty(b.pictures) || return false
+        b.draws = true
         send_logos!(b, [logo_picture(b.cell), mark_picture(b.cell)])
         Base.inferencebarrier(flush)(b.out)
-        filter!(kv -> kv.first[1] !== :start, b.pages) # drawn without room for its picture
+        forget_picture_pages!(b) # drawn without room for pictures
         return true
     end
     # iTerm2 answers for a picture sent in pieces without its number. Answers come in the
@@ -3017,9 +3055,14 @@ function handle!(b::Browser, ev::GraphicsEvent)
         # A picture it had taken, which it could not draw.
         j = ev.ok ? nothing : findfirst(pic -> pic.id == ev.id, b.pictures)
         j === nothing && return false
-        deleteat!(b.pictures, j)
+        pic = popat!(b.pictures, j)
     end
-    filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with or without its picture
+    if ev.ok
+        filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with or without its picture
+    else
+        push!(b.refused, pic.id)
+        forget_picture_pages!(b)
+    end
     return true
 end
 

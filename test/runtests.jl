@@ -2143,6 +2143,44 @@ end
     out = String(take!(t.out_stream.io))
     @test !occursin("●●●", out) && occursin("a=p,q=1,C=1,i=$(mark.id),", out)
     @test count(DocBrowser.GRAPHICS_QUERY, out) == 1
+    # A PNG image that is a paragraph of its own is drawn, once it is in view. The browser
+    # reads only the size at the start of the file, and the terminal reads the rest.
+    mktempdir() do dir
+        write(joinpath(dir, "plot.png"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x8c\0\0\0\x3c", zeros(UInt8, 20))
+        write(joinpath(dir, "photo.jpg"), zeros(UInt8, 30))
+        path = joinpath(dir, "page.md")
+        write(path, "# Pictures\n\n![A plot](plot.png)\n\n![A photo](photo.jpg)\n\nSee ![this](plot.png) too.\n")
+        b = DocBrowser.opening(fake_terminal(""; rows=30))
+        written()
+        handle!(b, DocBrowser.CellSizeEvent(15, 7))
+        handle!(b, DocBrowser.GraphicsEvent(DocBrowser.GRAPHICS_QUERY_ID, true))
+        handle!(b, DocBrowser.AnsweredEvent())
+        written()
+        key = DocBrowser.ManualTarget(path, "")
+        shown() = join(String.(DocBrowser.page(b, key, DocBrowser.doc_width(b)).lines), '\n')
+        @test occursin("A plot", shown()) && !occursin("(Image: A plot)", shown())
+        @test occursin("(Image: A photo)", shown()) && occursin("(Image: this)", shown())
+        pic = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images).picture
+        @test (pic.cols, pic.rows, pic.width, pic.height) == (20, 4, 140, 60)
+        DocBrowser.follow!(b, key)
+        frame(b)
+        @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written()) && pic in b.awaited
+        @test pic in [p.picture for p in b.placements]
+        frame(b)
+        @test !occursin("\e_G", written()) # sent only once
+        # After an editor, it is sent again when it is next drawn.
+        @test handle!(b, DocBrowser.GraphicsEvent(pic.id, true))
+        DocBrowser.leave_screen(b)
+        DocBrowser.enter_screen(b)
+        written()
+        frame(b)
+        @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written())
+        # One the terminal cannot draw is shown as text from then on.
+        @test handle!(b, DocBrowser.GraphicsEvent(pic.id, false))
+        @test occursin("(Image: A plot)", shown()) && isempty(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images)
+        # Where pictures are not drawn, every image is text.
+        @test occursin("(Image: A plot)", join(String.(DocBrowser.manual_page(b.cat, path, 80).lines), '\n'))
+    end
 end
 
 @testset "search engine" begin

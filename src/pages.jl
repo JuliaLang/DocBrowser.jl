@@ -70,11 +70,24 @@ struct Picture
 end
 
 # A picture on a page, by the line and column of its top left cell. The page leaves the cells
-# under it blank.
+# under it blank. `file` is the PNG file it is read from, or empty for one the browser draws.
 struct PageImage
     line::Int
     col::Int
     picture::Picture
+    file::String
+end
+PageImage(line::Int, col::Int, picture::Picture) = PageImage(line, col, picture, "")
+
+"""
+    PictureSupport
+
+What a page needs to know to make room for pictures from files: the height and width of
+the terminal's cells, and the numbers of the pictures it could not draw.
+"""
+struct PictureSupport
+    cell::Tuple{Int,Int}
+    refused::Set{Int}
 end
 
 struct Page
@@ -90,8 +103,10 @@ struct PageBuilder
     spots::Vector{Spot}
     width::Int
     images::Vector{PageImage}
+    pictures::Union{Nothing,PictureSupport} # nothing where the terminal draws no pictures
 end
-PageBuilder(width::Int) = PageBuilder(AnnotatedString{String}[], Spot[], width, PageImage[])
+PageBuilder(width::Int, pictures::Union{Nothing,PictureSupport}=nothing) =
+    PageBuilder(AnnotatedString{String}[], Spot[], width, PageImage[], pictures)
 
 Page(pb::PageBuilder, source=nothing) =
     Page(pb.lines, sort_by!(pb.spots, s -> (s.line, first(s.cols))), source, heading_lines(pb.lines), pb.images)
@@ -421,14 +436,18 @@ function mention_target(cat::Catalog, name::AbstractString)
 end
 
 """
-    add_markdown!(pb, md, ctx, cat; contents=false)
+    add_markdown!(pb, md, ctx, cat; contents=false, dirs=String[])
 
 Render `md`, making links of the names it mentions, which are looked up from module `ctx`.
 Blocks of code get a ⧉ that copies them. With `contents`, a page with several
-headings starts with links to them.
+headings starts with links to them. An image that is a paragraph of its own is drawn as a
+picture, where the terminal draws them and the image is a PNG file in one of `dirs`.
 """
-function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents::Bool=false)
+function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents::Bool=false,
+                       dirs::Vector{String}=String[])
     refs = ref_targets(md)
+    marks = pb.pictures === nothing || isempty(dirs) || !(md isa Markdown.MD) ? PictureMark[] :
+        picture_marks!(md, dirs, pb.pictures)
     lines = render_markdown(md, pb.width)
     if contents
         titles = [strip(String(lines[i])) for i in heading_lines(lines)]
@@ -449,6 +468,10 @@ function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents:
     lang = ""
     left = 0 # lines still to come of a block whose length is known
     for line in lines
+        if left == 0 && !isempty(marks) && (m = match(PICTURE_MARK, String(line))) !== nothing
+            add_picture!(pb, SubString(line, 1, ncodeunits(m[1])), marks[parse(Int, m[2])])
+            continue
+        end
         code = is_code_line(line)
         if left == 0 && code && !isempty(nodes)
             isempty(block) || (add_copy_mark!(pb, block, lang); empty!(block))
@@ -472,6 +495,45 @@ function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents:
         inblock && push!(block, String(line))
     end
     isempty(block) || add_copy_mark!(pb, block, lang)
+end
+
+# An image to draw as a picture: its file, its width and height in pixels, and its text.
+const PictureMark = Tuple{String,Int,Int,String}
+
+# The word that holds the place of the `n`th picture while the Markdown is rendered, and what
+# comes before it on its line, such as the bar of a note.
+picture_mark(n::Int) = "￼$n"
+const PICTURE_MARK = Regex("^(.*?)￼(\\d+)\\s*\$")
+
+# The images that are paragraphs of their own and can be drawn as pictures, each of which is
+# replaced by its mark.
+function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupport)
+    found = PictureMark[]
+    walk_md(md) do x
+        x isa Markdown.Paragraph || return
+        parts = filter(y -> !(y isa AbstractString && isempty(strip(y))), x.content)
+        length(parts) == 1 && parts[1] isa Markdown.Image || return
+        img = parts[1]::Markdown.Image
+        file = image_file(img.url, dirs)
+        (file === nothing || picture_id(file) in pics.refused) && return
+        size = png_size(file)
+        size === nothing && return
+        push!(found, (file, size[1], size[2], img.alt))
+        x.content = Any[picture_mark(length(found))]
+    end
+    return found
+end
+
+# Blank rows for a picture, with its text under it. They start as its mark's line did, so a
+# picture in a note keeps the note's bar beside it.
+function add_picture!(pb::PageBuilder, prefix, (file, w, h, alt)::PictureMark)
+    col = textwidth(String(prefix)) + 1
+    pic = file_picture(file, w, h, pb.width - col - 1, (pb.pictures::PictureSupport).cell)
+    push!(pb.images, PageImage(length(pb.lines) + 1, col, pic, file))
+    for _ in 1:pic.rows
+        push!(pb.lines, concat(prefix))
+    end
+    isempty(alt) || push!(pb.lines, concat(prefix, styled(alt, :REPL_DocBrowser_dim)))
 end
 
 # The blocks of code in `x`, in the order they are shown. Those that show without the face of

@@ -4,6 +4,17 @@
 # Where the Markdown source of the manual is: installed with Julia if it is, or downloaded.
 manual_dir() = something(installed_manual_dir(), downloaded_manual_dir())
 
+# Where the images of the manual page at `path` are. A downloaded manual has none, but the
+# HTML manual installed with Julia has them, in the same places.
+function image_dirs(path::String)
+    dirs = [dirname(path)]
+    dir = manual_dir()
+    if startswith(path, dir) && dir != installed_manual_dir()
+        push!(dirs, normpath(Sys.BINDIR, Base.DOCDIR, "html", "en", relpath(dirname(path), dir)))
+    end
+    return dirs
+end
+
 function installed_manual_dir()
     dir = normpath(Sys.BINDIR, Base.DOCDIR, "src")
     return isfile(joinpath(dir, "pages.toml")) ? dir : nothing
@@ -442,12 +453,13 @@ function manual_link(link::Markdown.Link, path::String, ctx::Module, cat::Catalo
 end
 
 """
-    manual_page(cat, path, width) -> Page
+    manual_page(cat, path, width, pictures=nothing) -> Page
 
-A manual page, with its Documenter syntax made plain.
+A manual page, with its Documenter syntax made plain, and its images drawn as pictures
+where `pictures` says the terminal can.
 """
-function manual_page(cat::Catalog, path::String, width::Int)
-    pb = PageBuilder(width)
+function manual_page(cat::Catalog, path::String, width::Int, pictures::Union{Nothing,PictureSupport}=nothing)
+    pb = PageBuilder(width, pictures)
     addline!(pb)
     ctx = manual_context(path, cat)
     pkg = in_stdlib_dir(path) ? nothing : page_package(cat, path)
@@ -475,7 +487,7 @@ function manual_page(cat::Catalog, path::String, width::Int)
     end
     md = Markdown.parse(read(path, String))
     documenter!(md, path, ctx, cat)
-    add_markdown!(pb, md, ctx, cat)
+    add_markdown!(pb, md, ctx, cat; dirs=image_dirs(path))
     addline!(pb)
     return Page(pb, SourceTarget(path, 1))
 end
