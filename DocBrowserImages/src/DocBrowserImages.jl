@@ -9,6 +9,8 @@ module DocBrowserImages
 
 import Cairo, FileIO, ImageIO, Rsvg
 
+const MAX_RASTER = 1024
+
 """
     read_png(file) -> (png, width, height)
 
@@ -18,6 +20,10 @@ function read_png(file::String)
     lowercase(splitext(file)[2]) == ".svg" && return svg_png(file)
     img = FileIO.load(file)
     ndims(img) == 3 && (img = img[:, :, 1]) # the first page of a TIFF file with several
+    # A photo as PNG can be many times its size as JPEG. The terminal shows no more than
+    # about a thousand pixels across, so a large image keeps every `step`th pixel.
+    step = cld(maximum(size(img)), MAX_RASTER)
+    step > 1 && (img = img[1:step:end, 1:step:end])
     io = IOBuffer()
     FileIO.save(FileIO.Stream{FileIO.format"PNG"}(io), img)
     return take!(io), size(img, 2), size(img, 1)

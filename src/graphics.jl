@@ -111,9 +111,11 @@ function png_image end
 # in the latest world, since a task that started before the load would not see the method
 images_loaded() = hasmethod(png_image, Tuple{String}; world=Base.get_world_counter())
 
-# The images that were read, by file, so that a page drawn again does not read them again.
-const READ_IMAGES = Dict{String,Union{Nothing,Tuple{Vector{UInt8},Int,Int}}}()
+# The images that were read, by file and the time it was changed, so that a page drawn
+# again does not read them again, but an edited file is read again. A few are kept.
+const READ_IMAGES = Dict{Tuple{String,Float64},Union{Nothing,Tuple{Vector{UInt8},Int,Int}}}()
 const READ_IMAGES_LOCK = ReentrantLock()
+const MAX_READ_IMAGES = 32
 
 image_format(file::String) = get(IMAGE_FORMATS, lowercase(lstrip(splitext(file)[2], '.')), nothing)
 
@@ -127,7 +129,9 @@ function read_image(file::String)
     format = image_format(file)
     (format === nothing || !format[2] || !images_loaded()) && return nothing
     filesize(file) <= MAX_PICTURE_BYTES || return nothing
-    return @lock READ_IMAGES_LOCK get!(READ_IMAGES, file) do
+    key = (file, mtime(file))
+    return @lock READ_IMAGES_LOCK get!(READ_IMAGES, key) do
+        length(READ_IMAGES) >= MAX_READ_IMAGES && empty!(READ_IMAGES)
         # called in the latest world, so that adding the method invalidates no compiled code
         png = @attempt Base.invokelatest(png_image, file)::Tuple{Vector{UInt8},Int,Int}
         png === nothing || length(png[1]) <= MAX_PICTURE_BYTES && png[2] > 0 && png[3] > 0 ? png : nothing

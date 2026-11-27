@@ -16,6 +16,11 @@ png_size(png) = Tuple(Int(ntoh(reinterpret(UInt32, png[i:i+3])[1])) for i in (17
         FileIO.save(jpg, FileIO.load(out))
         png, w, h = DocBrowserImages.read_png(jpg)
         @test png_size(png) == (w, h) == (120, 80)
+        # A large one is made smaller, keeping its shape.
+        wide = joinpath(dir, "wide.jpg")
+        FileIO.save(wide, repeat(FileIO.load(jpg), 1, 30))
+        png, w, h = DocBrowserImages.read_png(wide)
+        @test png_size(png) == (w, h) == (900, 20)
         bad = joinpath(dir, "bad.svg")
         write(bad, "not an image")
         @test_throws Exception DocBrowserImages.read_png(bad)
