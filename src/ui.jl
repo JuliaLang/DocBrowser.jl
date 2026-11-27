@@ -1958,9 +1958,12 @@ function enter_screen(b::Browser)
     set_raw(b.term, true)
     put(b, ENTER_SCREEN)
     rich_colours() && put(b, scheme_reports(true))
+    # Entering the screen throws away the pictures in some terminals, such as Ghostty, so
+    # those the terminal had are sent again.
+    isempty(b.pictures) || send_logos!(b, splice!(b.pictures, eachindex(b.pictures)))
     flush(b.out)
     b.prev = String[]
-    empty!(b.shown) # the terminal keeps its pictures, but they are off the screen
+    empty!(b.shown)
 end
 
 # `closing` is whether the browser is leaving for good, and not for a while, as for an editor.
@@ -1984,9 +1987,9 @@ function check_size!(b::Browser)
     return true
 end
 
-# Clear the screen, so that the next frame draws every row.
+# Makes the next frame draw every row. Each row is blanked before it is written, so the
+# screen is not erased, which in Ghostty also throws away the pictures that are not in view.
 function clear_screen!(b::Browser)
-    put(b, "\e[H\e[2J")
     b.prev = String[]
     return
 end
@@ -2983,20 +2986,24 @@ end
 handle!(b::Browser, ev::CellSizeEvent) = (b.cell = (ev.height, ev.width); false)
 handle!(b::Browser, ::AnsweredEvent) = (b.answered = true; false)
 
+function send_logos!(b::Browser, pics::Vector{Picture})
+    buf = IOBuffer()
+    for pic in pics
+        send_picture(buf, pic, logo_pixels(pic))
+        push!(b.awaited, pic)
+    end
+    put(b, take!(buf))
+    b.sent, b.gave_up = time(), false
+end
+
 # The terminal said that it draws pictures, so it is sent the browser's. Or it answered for
 # one of them: it has taken it, and the picture can be drawn, or it could not draw it, and
 # the picture is left out from then on.
 function handle!(b::Browser, ev::GraphicsEvent)
     if ev.id == GRAPHICS_QUERY_ID
         ev.ok && isempty(b.awaited) && isempty(b.pictures) || return false
-        buf = IOBuffer()
-        for pic in (logo_picture(b.cell), mark_picture(b.cell))
-            send_picture(buf, pic, logo_pixels(pic))
-            push!(b.awaited, pic)
-        end
-        put(b, take!(buf))
+        send_logos!(b, [logo_picture(b.cell), mark_picture(b.cell)])
         Base.inferencebarrier(flush)(b.out)
-        b.sent, b.gave_up = time(), false
         filter!(kv -> kv.first[1] !== :start, b.pages) # drawn without room for its picture
         return true
     end

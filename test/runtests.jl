@@ -2120,10 +2120,16 @@ end
     b.card = nothing
     # A picture that the terminal fails to draw gives way to the dots again.
     @test handle!(b, DocBrowser.GraphicsEvent(logo.id, false)) && occursin("● ●", start())
-    # The terminal keeps the pictures while an editor has the screen. Closing frees them.
+    # Coming back from an editor sends the pictures again, as some terminals throw them away.
     DocBrowser.leave_screen(b)
     DocBrowser.enter_screen(b)
-    @test !occursin("\e_G", written()) && b.pictures == [mark]
+    out = written()
+    @test occursin("i=$(mark.id),s=", out) && !occursin("i=$(logo.id),s=", out)
+    @test isempty(b.pictures) && b.awaited == [mark] && mark in [p.picture for p in (frame(b); b.placements)]
+    @test handle!(b, DocBrowser.GraphicsEvent(mark.id, true)) && b.pictures == [mark]
+    # Redrawing the whole screen, as for a new size, keeps them.
+    DocBrowser.clear_screen!(b)
+    @test !occursin("2J", written())
     DocBrowser.leave_screen(b, true)
     @test occursin("a=d,q=2,d=I,i=$(mark.id)", written())
     withenv("JULIA_DOCBROWSER_IMAGES" => "no") do
