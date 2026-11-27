@@ -3704,7 +3704,25 @@ else
     watch_resize(f) = Timer(_ -> f(), 0.05; interval=0.05)
 end
 
+# Julia's precompilation reads keys from a terminal's input, and leaves it out of raw mode,
+# unless something else holds this lock, which Julia has from 1.15.
+function raw_mode_lock(term::REPL.Terminals.TextTerminal)
+    s = hasproperty(term, :in_stream) ? getproperty(term, :in_stream) : nothing
+    return s isa Base.TTY && hasfield(Base.TTY, :raw_lock) ? getfield(s, :raw_lock)::ReentrantLock : nothing
+end
+
 function run_screen!(b::Browser)
+    # Held while the browser has the screen, as a package it loads may be precompiled.
+    rawlock = raw_mode_lock(b.term)
+    holds = rawlock !== nothing && trylock(rawlock)
+    try
+        run_screen_loop!(b)
+    finally
+        holds && unlock(rawlock::ReentrantLock)
+    end
+end
+
+function run_screen_loop!(b::Browser)
     enter_screen(b)
     b.live = true
     timer = watch_resize(() -> tick(b))
