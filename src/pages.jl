@@ -94,12 +94,23 @@ struct PictureSupport
     wanted::Base.RefValue{Bool}
 end
 
+# A box on a page where an image of the format `format` will be drawn once DocBrowserImages
+# has read it: `rows` lines from `line`, `cols` columns from `col`.
+struct ImageHolder
+    line::Int
+    col::Int
+    rows::Int
+    cols::Int
+    format::String
+end
+
 struct Page
     lines::Vector{AnnotatedString{String}}
     spots::Vector{Spot}
     source::Union{Nothing,SourceTarget}
     headings::Vector{Int}
     images::Vector{PageImage}
+    holders::Vector{ImageHolder}
 end
 
 struct PageBuilder
@@ -107,13 +118,14 @@ struct PageBuilder
     spots::Vector{Spot}
     width::Int
     images::Vector{PageImage}
+    holders::Vector{ImageHolder}
     pictures::Union{Nothing,PictureSupport} # nothing where the terminal draws no pictures
 end
 PageBuilder(width::Int, pictures::Union{Nothing,PictureSupport}=nothing) =
-    PageBuilder(AnnotatedString{String}[], Spot[], width, PageImage[], pictures)
+    PageBuilder(AnnotatedString{String}[], Spot[], width, PageImage[], ImageHolder[], pictures)
 
 Page(pb::PageBuilder, source=nothing) =
-    Page(pb.lines, sort_by!(pb.spots, s -> (s.line, first(s.cols))), source, heading_lines(pb.lines), pb.images)
+    Page(pb.lines, sort_by!(pb.spots, s -> (s.line, first(s.cols))), source, heading_lines(pb.lines), pb.images, pb.holders)
 
 is_heading_face(v) = v isa Symbol && startswith(String(v), "markdown_h") && v !== :markdown_hrule
 
@@ -526,12 +538,17 @@ function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupp
             if png === nothing
                 format = image_format(file)
                 format === nothing && return
-                readable = format[2] && pics.images ∉ (:loaded, :failed)
-                readable && (pics.wanted[] = true)
-                x.content = image_label(format[1], img.alt, readable ? pics.images : :none)
-                return
+                if format[2] && pics.images ∉ (:loaded, :failed)
+                    # A box holds its place until DocBrowserImages can draw it.
+                    pics.wanted[] = true
+                    size = (0, 0)
+                else
+                    x.content = Any[isempty(img.alt) ? "($(format[1]) image)" : "($(format[1]) image: $(img.alt))"]
+                    return
+                end
+            else
+                size = (png[2], png[3])
             end
-            size = (png[2], png[3])
         end
         push!(found, (file, size[1], size[2], img.alt))
         x.content = Any[picture_mark(length(found))]
@@ -539,18 +556,35 @@ function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupp
     return found
 end
 
-# The text of an image whose format the terminal cannot read, which says whether it will be
-# drawn once DocBrowserImages is loaded, or would be if it were installed.
-function image_label(name::String, alt::String, images::Symbol)
-    label = isempty(alt) ? "($name image" : "($name image: $alt"
-    images === :absent && return Any[label * "; add ", Markdown.Code("", "DocBrowserImages"), " to draw it)"]
-    images in (:installed, :loading) && return Any[label * ", loading DocBrowserImages)"]
-    return Any[label * ")"]
+# A box where an image will be drawn, which says what draws it, with the image's text under it.
+function add_holder!(pb::PageBuilder, prefix, file::String, alt::String)
+    col = textwidth(String(prefix)) + 1
+    name = image_format(file)[1]
+    note = (pb.pictures::PictureSupport).images === :absent ? "add DocBrowserImages to draw it" : "loading DocBrowserImages…"
+    # as wide as leaves the same space either side of the note
+    inner = clamp(max(36 + isodd(textwidth(note)), textwidth(note) + 4), 1, max(1, pb.width - col - 3))
+    border = :REPL_DocBrowser_border
+    function line(text)
+        text = first(text, inner)
+        left = (inner - textwidth(text)) ÷ 2
+        middle = " "^left * text * " "^(inner - textwidth(text) - left)
+        return concat(prefix, styled("│", border), styled(middle, :REPL_DocBrowser_dim), styled("│", border))
+    end
+    top = length(pb.lines) + 1
+    push!(pb.lines, concat(prefix, styled("╭" * "─"^inner * "╮", border)))
+    push!(pb.lines, line(""))
+    push!(pb.lines, line("$name image"))
+    push!(pb.lines, line(note))
+    push!(pb.lines, line(""))
+    push!(pb.lines, concat(prefix, styled("╰" * "─"^inner * "╯", border)))
+    push!(pb.holders, ImageHolder(top, col, length(pb.lines) - top + 1, inner + 2, name))
+    isempty(alt) || push!(pb.lines, concat(prefix, styled(alt, :REPL_DocBrowser_dim)))
 end
 
 # Blank rows for a picture, with its text under it. They start as its mark's line did, so a
 # picture in a note keeps the note's bar beside it.
 function add_picture!(pb::PageBuilder, prefix, (file, w, h, alt)::PictureMark)
+    w == 0 && return add_holder!(pb, prefix, file, alt)
     col = textwidth(String(prefix)) + 1
     pic = file_picture(file, w, h, pb.width - col - 1, (pb.pictures::PictureSupport).cell)
     push!(pb.images, PageImage(length(pb.lines) + 1, col, pic, file))

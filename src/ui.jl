@@ -1313,6 +1313,9 @@ function describe(b::Browser, action)
         return "click or drag to scroll"
     elseif kind === :image
         return "$(basename(action[2])) · click to open it in its app"
+    elseif kind === :holder
+        b.images === :absent || return "$(action[2]) image · drawn here once DocBrowserImages has loaded"
+        return "$(action[2]) image · drawn here with DocBrowserImages: pkg> add DocBrowserImages, then open the browser again"
     end
     return nothing
 end
@@ -1829,6 +1832,9 @@ function draw_doc(b::Browser, x::Int, w::Int)
         for r in top:bottom
             push!(b.hits, Hit(r - b.doc_scroll + 2, (x + img.col - 1):(x + img.col + img.picture.cols - 2), (:image, img.file)))
         end
+    end
+    for h in p.holders, r in max(h.line, b.doc_scroll + 1):min(h.line + h.rows - 1, b.doc_scroll + n)
+        push!(b.hits, Hit(r - b.doc_scroll + 2, (x + h.col - 1):(x + h.col + h.cols - 2), (:holder, h.format)))
     end
     # A scroll bar in the last column, when the page does not fit.
     thumb = 0:-1

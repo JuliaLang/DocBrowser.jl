@@ -2182,12 +2182,17 @@ end
         # One the terminal cannot draw is shown as text from then on.
         @test handle!(b, DocBrowser.GraphicsEvent(pic.id, false))
         @test occursin("(Image: A plot)", shown()) && isempty(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images)
-        # Other formats need DocBrowserImages. It is loaded by itself where it is installed,
-        # and a page that it fails to load in shows the image as text.
-        @test b.images === :absent && occursin("(JPEG image: A photo; add DocBrowserImages to draw it)", shown())
+        # Other formats need DocBrowserImages. Until it is loaded a box holds their place, and
+        # pointing at it says how to get it. It is loaded by itself where it is installed, and
+        # a page that it fails to load in shows the image as text.
+        holder = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).holders)
+        @test b.images === :absent && holder.format == "JPEG" && occursin(r"│( +)add DocBrowserImages to draw it\1│", shown())
+        frame(b)
+        holds = filter(h -> h.action == (:holder, "JPEG"), b.hits)
+        @test length(holds) == holder.rows == 6 && occursin("pkg> add DocBrowserImages", DocBrowser.describe(b, first(holds).action))
         b.images = :installed
         DocBrowser.forget_picture_pages!(b)
-        @test occursin("(JPEG image: A photo, loading DocBrowserImages)", shown()) && b.images === :loading
+        @test occursin("loading DocBrowserImages…", shown()) && b.images === :loading
         @test b.modal == "Loading DocBrowserImages…"
         wait(b.load_task)
         @test b.images === :failed && isempty(b.modal) && occursin("(JPEG image: A photo)\n", shown() * "\n")
