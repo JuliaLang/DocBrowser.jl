@@ -2159,6 +2159,7 @@ end
         handle!(b, DocBrowser.CellSizeEvent(15, 7))
         handle!(b, DocBrowser.GraphicsEvent(DocBrowser.GRAPHICS_QUERY_ID, true))
         handle!(b, DocBrowser.AnsweredEvent())
+        foreach(p -> handle!(b, DocBrowser.GraphicsEvent(p.id, true)), copy(b.awaited))
         written()
         key = DocBrowser.ManualTarget(path, "")
         shown() = join(String.(DocBrowser.page(b, key, DocBrowser.doc_width(b)).lines), '\n')
@@ -2187,6 +2188,9 @@ end
         DocBrowser.leave_screen(b)
         DocBrowser.enter_screen(b)
         written()
+        # The terminal takes the logos sent again, or the browser stops expecting pictures
+        # once loading DocBrowserImages below has taken longer than it waits for them.
+        foreach(p -> handle!(b, DocBrowser.GraphicsEvent(p.id, true)), copy(b.awaited))
         frame(b)
         @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written())
         # One the terminal cannot draw is shown as text from then on.
@@ -2200,12 +2204,15 @@ end
         frame(b)
         holds = filter(h -> h.action == (:holder, "JPEG"), b.hits)
         @test length(holds) == holder.rows == 6 && occursin("pkg> add DocBrowserImages", DocBrowser.describe(b, first(holds).action))
+        # It is precompiled first, quietly, with the browser still usable and closable.
         b.images = :installed
+        b.live = true
         DocBrowser.forget_picture_pages!(b)
         @test occursin("loading DocBrowserImages…", shown()) && b.images === :loading
-        @test b.modal == "Loading DocBrowserImages…"
-        wait(b.load_task)
-        @test b.images === :failed && isempty(b.modal) && occursin("(JPEG image: A photo)\n", shown() * "\n")
+        @test isempty(b.modal) && !DocBrowser.loading(b)
+        wait(b.images_task)
+        b.live = false
+        @test b.images === :failed && occursin("(JPEG image: A photo)\n", shown() * "\n")
         # Once it is loaded, the image is drawn.
         @eval DocBrowser.png_image(file::String) = (read(joinpath($dir, "plot.png")), 140, 60)
         try

@@ -162,6 +162,7 @@ Base.@kwdef mutable struct Browser
     # whether a page wants it.
     images::Symbol = :unknown
     images_wanted::Base.RefValue{Bool} = Ref(false)
+    images_task::Union{Nothing,Task} = nothing
     # Where pictures go in the frame being drawn, and where they are on the screen.
     placements::Vector{Placement} = Placement[]
     shown::Vector{Placement} = Placement[]
@@ -804,19 +805,18 @@ function load_package!(b::Browser, id::PkgId; then::String="")
     return
 end
 
-# Precompiles `id`, and any extensions in `exts` that loading it brings in, and then loads
-# it with `load`, showing what that prints in the console panel, and then calls `done(ok)`.
-function load_in_console(done, b::Browser, id::PkgId, load; exts::Vector{PkgId}=PkgId[])
+# Precompiles `id` and then loads it with `load`, showing what that prints in the console
+# panel, and then calls `done(ok)`.
+function load_in_console(done, b::Browser, id::PkgId, load)
     b.console = ["julia> import " * id.name]
     # Loading prints nothing while it precompiles, which can take minutes, so say so.
-    ids = [id; exts]
-    precompiled = all(i -> @attempt(dynamic(Base.isprecompiled)(i)::Bool, false), ids)
+    precompiled = @attempt(dynamic(Base.isprecompiled)(id)::Bool, false)
     what = Ref((precompiled ? "Loading " : "Precompiling ") * id.name)
     function steps()
         # Precompiling first, as the import would, runs in other processes, and the browser
         # keeps working meanwhile. Without this internal function the import does it.
         precompiled || try
-            dynamic(Base.Precompilation.precompilepkgs)(ids; _from_loading=true, ignore_loaded=false)
+            dynamic(Base.Precompilation.precompilepkgs)([id]; _from_loading=true, ignore_loaded=false)
         catch err
             err isa MethodError || rethrow()
         end
@@ -833,19 +833,40 @@ function load_in_console(done, b::Browser, id::PkgId, load; exts::Vector{PkgId}=
 end
 
 # Loads DocBrowserImages, for a page with an image that only it reads, and then draws the
-# pages again with their pictures.
+# pages again with their pictures. It is precompiled first, with its extension, quietly in
+# other processes, as that can take minutes that nobody asked for. Meanwhile the browser
+# can be used and closed, and if it closes the package is loaded the next time it is needed.
 function load_images!(b::Browser)
-    (Base.generating_output() || loading(b)) && return
+    Base.generating_output() && return
     b.images = :loading
     ext = PkgId(Base.uuid5(PkgId(@__MODULE__).uuid, "DocBrowserImagesExt"), "DocBrowserImagesExt")
-    load_in_console(b, IMAGES_PACKAGE, () -> dynamic(Base.require)(IMAGES_PACKAGE); exts=[ext]) do ok
-        b.images = ok && images_loaded() ? :loaded : :failed
-        ok && (b.console = nothing; b.status = "Loaded DocBrowserImages")
-        b.world = Base.get_world_counter()
-        @lock READ_IMAGES_LOCK empty!(READ_IMAGES)
-        forget_picture_pages!(b)
+    ids = [IMAGES_PACKAGE, ext]
+    b.images_task = @async try
+        all(i -> @attempt(dynamic(Base.isprecompiled)(i)::Bool, false), ids) ||
+            dynamic(Base.Precompilation.precompilepkgs)(ids; _from_loading=true, ignore_loaded=false, io=IOBuffer())
+        # one load at a time, as each takes over what the session prints
+        while @lock b.lock (b.live && loading(b))
+            sleep(0.2)
+        end
+        @lock b.lock begin
+            b.live || (b.images = :installed; return)
+            load_in_console(b, IMAGES_PACKAGE, () -> dynamic(Base.require)(IMAGES_PACKAGE)) do ok
+                b.images = ok && images_loaded() ? :loaded : :failed
+                ok && (b.console = nothing; b.status = "Loaded DocBrowserImages")
+                b.world = Base.get_world_counter()
+                @lock READ_IMAGES_LOCK empty!(READ_IMAGES)
+                forget_picture_pages!(b)
+            end
+        end
+    catch err
+        err isa InterruptException && rethrow()
+        @lock b.lock begin
+            b.images = :failed
+            b.status = "Could not precompile DocBrowserImages"
+            forget_picture_pages!(b)
+            b.live && in_world(draw, b)
+        end
     end
-    b.modal = "Loading DocBrowserImages…"
     return
 end
 
@@ -899,6 +920,9 @@ function in_console(f, done, b::Browser, what::Ref{String})
             @lock b.lock begin
                 b.loading = ""
                 b.modal = ""
+                # The terminal's answers about pictures could not be read while the package
+                # loaded, so the wait for them starts again.
+                isempty(b.awaited) || (b.sent = time())
                 try
                     done(ok)
                 catch err
@@ -1912,7 +1936,7 @@ end
 function frame(b::Browser)
     empty!(b.hits)
     empty!(b.placements)
-    if !b.gave_up && !isempty(b.awaited) && time() - b.sent > PICTURE_WAIT
+    if !b.gave_up && !isempty(b.awaited) && !loading(b) && time() - b.sent > PICTURE_WAIT
         b.gave_up = true
         forget_picture_pages!(b)
     end
