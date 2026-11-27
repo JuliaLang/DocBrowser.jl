@@ -158,6 +158,10 @@ Base.@kwdef mutable struct Browser
     # Whether the terminal said it draws pictures, and the numbers of those it could not draw.
     draws::Bool = false
     refused::Set{Int} = Set{Int}()
+    # Where DocBrowserImages is, as pages are told it, or `:unknown` before a page asks, and
+    # whether a page wants it.
+    images::Symbol = :unknown
+    images_wanted::Base.RefValue{Bool} = Ref(false)
     # Where pictures go in the frame being drawn, and where they are on the screen.
     placements::Vector{Placement} = Placement[]
     shown::Vector{Placement} = Placement[]
@@ -768,12 +772,31 @@ function load_package!(b::Browser, id::PkgId; then::String="")
     # The precompile workload must not load whatever the active project depends on.
     Base.generating_output() && return
     loading(b) && return (b.status = "Already " * lowercasefirst(b.loading); nothing)
-    b.console = ["julia> import " * id.name]
     start = current_key(b)
+    function done(ok)
+        ok || return
+        b.console = nothing
+        # Go to the package, or to the name asked for in it, only if nothing else was opened
+        # while it loaded.
+        go = current_key(b) == LoadTarget(id)
+        stayed = current_key(b) == start
+        # The package's bindings are only visible in the latest world.
+        b.world = Base.get_world_counter()
+        in_world(show_loaded!, b, id, go && isempty(then))
+        isempty(then) || !stayed || in_world(open_name!, b, then)
+    end
+    load_in_console(done, b, id, () -> import_package(id))
+    return
+end
+
+# Precompiles `id` and then loads it with `load`, showing what that prints in the console
+# panel, and then calls `done(ok)`.
+function load_in_console(done, b::Browser, id::PkgId, load)
+    b.console = ["julia> import " * id.name]
     # Loading prints nothing while it precompiles, which can take minutes, so say so.
-    precompiled = dynamic(Base.isprecompiled)(id)::Bool
+    precompiled = @attempt(dynamic(Base.isprecompiled)(id)::Bool, false)
     what = Ref((precompiled ? "Loading " : "Precompiling ") * id.name)
-    function load()
+    function steps()
         # Precompiling first, as the import would, runs in other processes, and the browser
         # keeps working meanwhile. Without this internal function the import does it.
         precompiled || try
@@ -788,21 +811,24 @@ function load_package!(b::Browser, id::PkgId; then::String="")
             b.modal = what[] * "…"
             b.live && in_world(draw, b)
         end
-        import_package(id)
+        load()
     end
-    function done(ok)
-        ok || return
-        b.console = nothing
-        # Go to the package, or to the name asked for in it, only if nothing else was opened
-        # while it loaded.
-        go = current_key(b) == LoadTarget(id)
-        stayed = current_key(b) == start
-        # The package's bindings are only visible in the latest world.
+    in_console(steps, done, b, what)
+end
+
+# Loads DocBrowserImages, for a page with an image that only it reads, and then draws the
+# pages again with their pictures.
+function load_images!(b::Browser)
+    (Base.generating_output() || loading(b)) && return
+    b.images = :loading
+    load_in_console(b, IMAGES_PACKAGE, () -> dynamic(Base.require)(IMAGES_PACKAGE)) do ok
+        b.images = ok && images_loaded() ? :loaded : :failed
+        ok && (b.console = nothing; b.status = "Loaded DocBrowserImages")
         b.world = Base.get_world_counter()
-        in_world(show_loaded!, b, id, go && isempty(then))
-        isempty(then) || !stayed || in_world(open_name!, b, then)
+        @lock READ_IMAGES_LOCK empty!(READ_IMAGES)
+        forget_picture_pages!(b)
     end
-    in_console(load, done, b, what)
+    b.modal = "Loading DocBrowserImages…"
     return
 end
 
@@ -1047,7 +1073,15 @@ expected(b::Browser, pic::Picture) = has_picture(b.pictures, pic) || !b.gave_up 
 has_picture(pics::Vector{Picture}, pic::Picture) = any(p -> p.id == pic.id, pics)
 
 # What pages need to make room for pictures from files, if the terminal draws them.
-picture_support(b::Browser) = b.draws && !b.gave_up ? PictureSupport(b.cell, b.refused) : nothing
+function picture_support(b::Browser)
+    b.draws && !b.gave_up || return nothing
+    if images_loaded()
+        b.images = :loaded
+    elseif b.images === :unknown
+        b.images = Base.identify_package(IMAGES_PACKAGE.name) == IMAGES_PACKAGE ? :installed : :absent
+    end
+    return PictureSupport(b.cell, b.refused, b.images, b.images_wanted)
+end
 
 # The pages whose pictures, or room for them, change with what the terminal says.
 forget_picture_pages!(b::Browser) = filter!(kv -> !(kv.first[1] === :start || kv.first[1] isa ManualTarget), b.pages)
@@ -1077,6 +1111,10 @@ function page(b::Browser, key, width::Int)
             end
             Page(pb)
         end
+    end
+    if b.images_wanted[]
+        b.images_wanted[] = false
+        b.images === :installed && load_images!(b)
     end
     return p::Page
 end
@@ -3019,7 +3057,8 @@ end
 function send_file_picture(b::Browser, img::PageImage)
     pic = img.picture
     (has_picture(b.pictures, pic) || has_picture(b.awaited, pic) || pic.id in b.refused) && return
-    data = @attempt read(img.file) UInt8[]
+    png = read_image(img.file)
+    data = png === nothing ? @attempt(read(img.file), UInt8[]) : png[1]
     if isempty(data)
         push!(b.refused, pic.id)
         forget_picture_pages!(b)

@@ -124,8 +124,10 @@ browser looked and why it found no more.
 - `JULIA_DOCBROWSER_AUTODOWNLOAD`: `no` stops the browser from downloading packages' manuals
   by itself. The button on a package's page still does.
 - `JULIA_DOCBROWSER_IMAGES`: `no` stops the browser from drawing pictures, such as the Julia
-  logo and the PNG images in manuals, in terminals that have the kitty graphics protocol. It
-  draws them with text instead.
+  logo and the images in manuals, in terminals that have the kitty graphics protocol. It
+  draws them with text instead. PNG images are drawn as they are. SVG, JPEG, TIFF and some
+  other formats need the DocBrowserImages package installed (`pkg> add DocBrowserImages`),
+  which the browser loads when a page has such an image.
 - `GITHUB_TOKEN`: raises GitHub's limit on the requests that finding those manuals makes.
 
 ## For AI agents

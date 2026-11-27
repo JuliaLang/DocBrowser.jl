@@ -83,11 +83,15 @@ PageImage(line::Int, col::Int, picture::Picture) = PageImage(line, col, picture,
     PictureSupport
 
 What a page needs to know to make room for pictures from files: the height and width of
-the terminal's cells, and the numbers of the pictures it could not draw.
+the terminal's cells, and the numbers of the pictures it could not draw. `images` is where
+DocBrowserImages is: `:absent`, `:installed`, `:loading`, `:loaded` or `:failed`, and a page
+with an image that only it reads sets `wanted`.
 """
 struct PictureSupport
     cell::Tuple{Int,Int}
     refused::Set{Int}
+    images::Symbol
+    wanted::Base.RefValue{Bool}
 end
 
 struct Page
@@ -517,11 +521,31 @@ function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupp
         file = image_file(img.url, dirs)
         (file === nothing || picture_id(file) in pics.refused) && return
         size = png_size(file)
-        size === nothing && return
+        if size === nothing
+            png = read_image(file)
+            if png === nothing
+                format = image_format(file)
+                format === nothing && return
+                readable = format[2] && pics.images ∉ (:loaded, :failed)
+                readable && (pics.wanted[] = true)
+                x.content = image_label(format[1], img.alt, readable ? pics.images : :none)
+                return
+            end
+            size = (png[2], png[3])
+        end
         push!(found, (file, size[1], size[2], img.alt))
         x.content = Any[picture_mark(length(found))]
     end
     return found
+end
+
+# The text of an image whose format the terminal cannot read, which says whether it will be
+# drawn once DocBrowserImages is loaded, or would be if it were installed.
+function image_label(name::String, alt::String, images::Symbol)
+    label = isempty(alt) ? "($name image" : "($name image: $alt"
+    images === :absent && return Any[label * "; add ", Markdown.Code("", "DocBrowserImages"), " to draw it)"]
+    images in (:installed, :loading) && return Any[label * ", loading DocBrowserImages)"]
+    return Any[label * ")"]
 end
 
 # Blank rows for a picture, with its text under it. They start as its mark's line did, so a

@@ -36,3 +36,33 @@ jobs:
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+  images:
+    name: DocBrowserImages - Julia ${{ matrix.version }} - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['1.12', '1']
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+        with:
+          project: DocBrowserImages
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          project: DocBrowserImages
+      - name: DocBrowser's extension for it loads
+        shell: bash
+        run: |
+          julia --color=yes -e '
+            using Pkg
+            Pkg.activate(temp=true)
+            Pkg.develop([PackageSpec(path="."), PackageSpec(path="DocBrowserImages")])
+            using DocBrowser, DocBrowserImages
+            hasmethod(DocBrowser.png_image, Tuple{String}) || error("DocBrowserImagesExt did not load")'

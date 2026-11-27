@@ -2159,7 +2159,7 @@ end
         key = DocBrowser.ManualTarget(path, "")
         shown() = join(String.(DocBrowser.page(b, key, DocBrowser.doc_width(b)).lines), '\n')
         @test occursin("A plot", shown()) && !occursin("(Image: A plot)", shown())
-        @test occursin("(Image: A photo)", shown()) && occursin("(Image: this)", shown())
+        @test occursin("(Image: this)", shown())
         pic = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images).picture
         @test (pic.cols, pic.rows, pic.width, pic.height) == (20, 4, 140, 60)
         DocBrowser.follow!(b, key)
@@ -2178,6 +2178,27 @@ end
         # One the terminal cannot draw is shown as text from then on.
         @test handle!(b, DocBrowser.GraphicsEvent(pic.id, false))
         @test occursin("(Image: A plot)", shown()) && isempty(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images)
+        # Other formats need DocBrowserImages. It is loaded by itself where it is installed,
+        # and a page that it fails to load in shows the image as text.
+        @test b.images === :absent && occursin("(JPEG image: A photo; add DocBrowserImages to draw it)", shown())
+        b.images = :installed
+        DocBrowser.forget_picture_pages!(b)
+        @test occursin("(JPEG image: A photo, loading DocBrowserImages)", shown()) && b.images === :loading
+        @test b.modal == "Loading DocBrowserImages…"
+        wait(b.load_task)
+        @test b.images === :failed && isempty(b.modal) && occursin("(JPEG image: A photo)\n", shown() * "\n")
+        # Once it is loaded, the image is drawn.
+        @eval DocBrowser.png_image(file::String) = (read(joinpath($dir, "plot.png")), 140, 60)
+        try
+            DocBrowser.forget_picture_pages!(b)
+            img = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images)
+            @test img.file == joinpath(dir, "photo.jpg") && !occursin("JPEG image", shown())
+            frame(b)
+            @test occursin("\e_Ga=t,f=100,i=$(img.picture.id),m=0;", written())
+        finally
+            Base.delete_method(only(methods(DocBrowser.png_image)))
+            empty!(DocBrowser.READ_IMAGES)
+        end
         # Where pictures are not drawn, every image is text.
         @test occursin("(Image: A plot)", join(String.(DocBrowser.manual_page(b.cat, path, 80).lines), '\n'))
     end

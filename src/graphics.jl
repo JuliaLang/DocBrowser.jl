@@ -90,6 +90,50 @@ function png_size(file::String)
     return w > 0 && h > 0 ? (w, h) : nothing
 end
 
+# The formats that the terminal cannot read, by the ends of their files' names, with the
+# name shown for them and whether DocBrowserImages reads them.
+const IMAGE_FORMATS = Dict("jpg" => ("JPEG", true), "jpeg" => ("JPEG", true),
+    "tif" => ("TIFF", true), "tiff" => ("TIFF", true), "qoi" => ("QOI", true),
+    "pbm" => ("PBM", true), "pgm" => ("PGM", true), "ppm" => ("PPM", true),
+    "exr" => ("EXR", true), "svg" => ("SVG", true), "gif" => ("GIF", false), "webp" => ("WebP", false))
+
+# The package that reads those formats.
+const IMAGES_PACKAGE = Base.PkgId(Base.UUID("c03421d8-dabe-4877-8210-1ac3ce4167c7"), "DocBrowserImages")
+
+"""
+    png_image(file) -> (png, width, height)
+
+The image in `file` as the contents of a PNG file, with its width and height in pixels. The
+extension for DocBrowserImages adds the method, once that package is loaded.
+"""
+function png_image end
+
+# in the latest world, since a task that started before the load would not see the method
+images_loaded() = hasmethod(png_image, Tuple{String}; world=Base.get_world_counter())
+
+# The images that were read, by file, so that a page drawn again does not read them again.
+const READ_IMAGES = Dict{String,Union{Nothing,Tuple{Vector{UInt8},Int,Int}}}()
+const READ_IMAGES_LOCK = ReentrantLock()
+
+image_format(file::String) = get(IMAGE_FORMATS, lowercase(lstrip(splitext(file)[2], '.')), nothing)
+
+"""
+    read_image(file) -> Union{Nothing,Tuple{Vector{UInt8},Int,Int}}
+
+The image in `file`, which is not a PNG file, as the contents of one with its width and
+height, if DocBrowserImages is loaded and can read it.
+"""
+function read_image(file::String)
+    format = image_format(file)
+    (format === nothing || !format[2] || !images_loaded()) && return nothing
+    filesize(file) <= MAX_PICTURE_BYTES || return nothing
+    return @lock READ_IMAGES_LOCK get!(READ_IMAGES, file) do
+        # called in the latest world, so that adding the method invalidates no compiled code
+        png = @attempt Base.invokelatest(png_image, file)::Tuple{Vector{UInt8},Int,Int}
+        png === nothing || length(png[1]) <= MAX_PICTURE_BYTES && png[2] > 0 && png[3] > 0 ? png : nothing
+    end
+end
+
 # The number a file's picture is kept under. It is above those of the logos.
 picture_id(file::String) = 0x01000000 + Int(hash(file) % 0x7effffff)
 
