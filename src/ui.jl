@@ -804,18 +804,19 @@ function load_package!(b::Browser, id::PkgId; then::String="")
     return
 end
 
-# Precompiles `id` and then loads it with `load`, showing what that prints in the console
-# panel, and then calls `done(ok)`.
-function load_in_console(done, b::Browser, id::PkgId, load)
+# Precompiles `id`, and any extensions in `exts` that loading it brings in, and then loads
+# it with `load`, showing what that prints in the console panel, and then calls `done(ok)`.
+function load_in_console(done, b::Browser, id::PkgId, load; exts::Vector{PkgId}=PkgId[])
     b.console = ["julia> import " * id.name]
     # Loading prints nothing while it precompiles, which can take minutes, so say so.
-    precompiled = @attempt(dynamic(Base.isprecompiled)(id)::Bool, false)
+    ids = [id; exts]
+    precompiled = all(i -> @attempt(dynamic(Base.isprecompiled)(i)::Bool, false), ids)
     what = Ref((precompiled ? "Loading " : "Precompiling ") * id.name)
     function steps()
         # Precompiling first, as the import would, runs in other processes, and the browser
         # keeps working meanwhile. Without this internal function the import does it.
         precompiled || try
-            dynamic(Base.Precompilation.precompilepkgs)([id]; _from_loading=true, ignore_loaded=false)
+            dynamic(Base.Precompilation.precompilepkgs)(ids; _from_loading=true, ignore_loaded=false)
         catch err
             err isa MethodError || rethrow()
         end
@@ -836,7 +837,8 @@ end
 function load_images!(b::Browser)
     (Base.generating_output() || loading(b)) && return
     b.images = :loading
-    load_in_console(b, IMAGES_PACKAGE, () -> dynamic(Base.require)(IMAGES_PACKAGE)) do ok
+    ext = PkgId(Base.uuid5(PkgId(@__MODULE__).uuid, "DocBrowserImagesExt"), "DocBrowserImagesExt")
+    load_in_console(b, IMAGES_PACKAGE, () -> dynamic(Base.require)(IMAGES_PACKAGE); exts=[ext]) do ok
         b.images = ok && images_loaded() ? :loaded : :failed
         ok && (b.console = nothing; b.status = "Loaded DocBrowserImages")
         b.world = Base.get_world_counter()
