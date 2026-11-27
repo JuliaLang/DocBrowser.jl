@@ -2166,6 +2166,10 @@ end
         frame(b)
         @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written()) && pic in b.awaited
         @test pic in [p.picture for p in b.placements]
+        # Clicking it opens its file in the system's app.
+        hits = filter(h -> h.action == (:image, joinpath(dir, "plot.png")), b.hits)
+        @test length(hits) == pic.rows && length(first(hits).cols) == pic.cols
+        @test DocBrowser.click!(b, first(hits), false) && last(OPENED) == joinpath(dir, "plot.png")
         frame(b)
         @test !occursin("\e_G", written()) # sent only once
         # After an editor, it is sent again when it is next drawn.

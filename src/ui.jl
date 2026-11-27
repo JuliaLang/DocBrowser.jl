@@ -739,6 +739,21 @@ function open_url(b::Browser, url::String)
     end
 end
 
+# Opens the file of a picture in the system's app for its format.
+function open_image(b::Browser, file::String)
+    if URL_OPENER[] === web_browser && haskey(ENV, "SSH_CONNECTION")
+        # The app would open on the remote machine.
+        return (b.status = "The image is on the remote machine: " * Base.contractuser(file); nothing)
+    end
+    try
+        URL_OPENER[](file)
+        b.status = "Opened " * basename(file)
+    catch err
+        err isa InterruptException && rethrow()
+        b.status = "Could not open " * basename(file)
+    end
+end
+
 function edit_source!(b::Browser, t::SourceTarget)
     isfile(t.file) || return (b.status = "Source file not found: " * Base.contractuser(t.file); nothing)
     suspend(b) do
@@ -1296,6 +1311,8 @@ function describe(b::Browser, action)
         return "✕ close the browser (q)"
     elseif kind === :scrollbar
         return "click or drag to scroll"
+    elseif kind === :image
+        return "$(basename(action[2])) · click to open it in its app"
     end
     return nothing
 end
@@ -1808,6 +1825,10 @@ function draw_doc(b::Browser, x::Int, w::Int)
         isempty(img.file) || send_file_picture(b, img)
         expected(b, img.picture) !== nothing && img.col + img.picture.cols - 1 <= pw || continue
         push!(b.placements, Placement(img.picture, top - b.doc_scroll + 2, x + img.col - 1, top - img.line, bottom - top + 1))
+        isempty(img.file) && continue
+        for r in top:bottom
+            push!(b.hits, Hit(r - b.doc_scroll + 2, (x + img.col - 1):(x + img.col + img.picture.cols - 2), (:image, img.file)))
+        end
     end
     # A scroll bar in the last column, when the page does not fit.
     thumb = 0:-1
@@ -3328,6 +3349,8 @@ function click!(b::Browser, h::Hit, double::Bool)
         b.query === nothing && start_search!(b)
     elseif kind === :copylink
         copy_place!(b)
+    elseif kind === :image
+        open_image(b, a[2])
     elseif kind === :focus
         a[2] === :names && side_placeholder(b) !== nothing && return false
         b.focus = a[2]

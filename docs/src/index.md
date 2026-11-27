@@ -70,6 +70,7 @@ forward buttons.
 - Right-click (or Alt- or Ctrl-click) opens the source of what you click.
 - Click `⧉` beside a block of code to copy it.
 - Drag to copy text; double-click copies a word, triple-click a line.
+- Click a picture to open its image in the system's app for it.
 - To select with your terminal instead, hold Shift while you drag (Option in iTerm2, Fn in
   Terminal.app).
 

@@ -66,6 +66,7 @@ code at the `julia>` prompt.
 - In terminals that support it, click anything, scroll, and use the mouse's back and forward buttons.
   Right-click, Alt-click or Ctrl-click opens the source of a method, name, package or link.
 - Drag across the documentation to copy text, double-click to copy a word, triple-click for a line.
+- Click a picture to open its image in the system's app for it.
   To select with your terminal instead, hold the key it uses for this (Shift in most terminals,
   Option in iTerm2, Fn in Terminal.app).
 
