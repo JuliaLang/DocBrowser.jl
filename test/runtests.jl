@@ -2164,6 +2164,12 @@ end
         shown() = join(String.(DocBrowser.page(b, key, DocBrowser.doc_width(b)).lines), '\n')
         @test occursin("A plot", shown()) && !occursin("(Image: A plot)", shown())
         @test occursin("(Image: this)", shown())
+        # One on the line after its text ends that paragraph, and is drawn under the text.
+        late = joinpath(dir, "late.md")
+        write(late, "Shown below:\n![Late](plot.png)\n")
+        p = DocBrowser.page(b, DocBrowser.ManualTarget(late, ""), DocBrowser.doc_width(b))
+        img = only(p.images)
+        @test strip(String(p.lines[img.line - 1])) == "Shown below:" && img.file == joinpath(dir, "plot.png")
         pic = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images).picture
         @test (pic.cols, pic.rows, pic.width, pic.height) == (20, 4, 140, 60)
         DocBrowser.follow!(b, key)

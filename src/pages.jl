@@ -521,15 +521,18 @@ const PictureMark = Tuple{String,Int,Int,String}
 picture_mark(n::Int) = "￼$n"
 const PICTURE_MARK = Regex("^(.*?)￼(\\d+)\\s*\$")
 
-# The images that are paragraphs of their own and can be drawn as pictures, each of which is
-# replaced by its mark.
+# The images that can be drawn as pictures, each of which is replaced by its mark. They are
+# those that are paragraphs of their own, or end one, as an image on the line after its text
+# does. Then the mark goes on a line of its own under the text.
 function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupport)
     found = PictureMark[]
     walk_md(md) do x
         x isa Markdown.Paragraph || return
-        parts = filter(y -> !(y isa AbstractString && isempty(strip(y))), x.content)
-        length(parts) == 1 && parts[1] isa Markdown.Image || return
-        img = parts[1]::Markdown.Image
+        i = findlast(y -> !(y isa AbstractString && isempty(strip(y))), x.content)
+        i !== nothing && x.content[i] isa Markdown.Image || return
+        img = x.content[i]::Markdown.Image
+        text = x.content[1:i-1]
+        alone = all(y -> y isa AbstractString && isempty(strip(y)), text)
         file = image_file(img.url, dirs)
         (file === nothing || picture_id(file) in pics.refused) && return
         size = png_size(file)
@@ -543,7 +546,7 @@ function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupp
                     pics.wanted[] = true
                     size = (0, 0)
                 else
-                    x.content = Any[isempty(img.alt) ? "($(format[1]) image)" : "($(format[1]) image: $(img.alt))"]
+                    alone && (x.content = Any[isempty(img.alt) ? "($(format[1]) image)" : "($(format[1]) image: $(img.alt))"])
                     return
                 end
             else
@@ -551,7 +554,8 @@ function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupp
             end
         end
         push!(found, (file, size[1], size[2], img.alt))
-        x.content = Any[picture_mark(length(found))]
+        mark = picture_mark(length(found))
+        x.content = alone ? Any[mark] : Any[text..., Markdown.LineBreak(), mark]
     end
     return found
 end
