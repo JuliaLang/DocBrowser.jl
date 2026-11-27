@@ -2167,10 +2167,15 @@ end
         @test occursin("(Image: this)", shown())
         # One on the line after its text ends that paragraph, and is drawn under the text.
         late = joinpath(dir, "late.md")
-        write(late, "Shown below:\n![Late](plot.png)\n")
+        write(late, "Shown below:\n![Late](plot.png)\n\n- ![Listed](plot.png)\n\nNot a mark: ￼9\n")
         p = DocBrowser.page(b, DocBrowser.ManualTarget(late, ""), DocBrowser.doc_width(b))
-        img = only(p.images)
+        img = p.images[1]
         @test strip(String(p.lines[img.line - 1])) == "Shown below:" && img.file == joinpath(dir, "plot.png")
+        # One in a list has the bullet on its first row only, and the mark's character in
+        # the text is only text.
+        listed = p.images[2]
+        rows = String.(p.lines[listed.line:listed.line+listed.picture.rows-1])
+        @test occursin('•', rows[1]) && !any(r -> occursin('•', r), rows[2:end]) && occursin("Not a mark", join(String.(p.lines)))
         pic = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images).picture
         @test (pic.cols, pic.rows, pic.width, pic.height) == (20, 4, 140, 60)
         DocBrowser.follow!(b, key)

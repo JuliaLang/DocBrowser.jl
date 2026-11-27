@@ -484,8 +484,11 @@ function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents:
     lang = ""
     left = 0 # lines still to come of a block whose length is known
     for line in lines
-        if left == 0 && !isempty(marks) && (m = match(PICTURE_MARK, String(line))) !== nothing
-            add_picture!(pb, SubString(line, 1, ncodeunits(m[1])), marks[parse(Int, m[2])])
+        # A page can have the mark's character itself, so only a mark that was made counts.
+        if left == 0 && !isempty(marks) && (m = match(PICTURE_MARK, String(line))) !== nothing &&
+                (n = tryparse(Int, m[2])) !== nothing && n in eachindex(marks)
+            prefix = SubString(line, 1, ncodeunits(m[1]))
+            add_picture!(pb, prefix, continued(prefix), marks[n])
             continue
         end
         code = is_code_line(line)
@@ -561,7 +564,7 @@ function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupp
 end
 
 # A box where an image will be drawn, which says what draws it, with the image's text under it.
-function add_holder!(pb::PageBuilder, prefix, file::String, alt::String)
+function add_holder!(pb::PageBuilder, prefix, rest, file::String, alt::String)
     col = textwidth(String(prefix)) + 1
     name = image_format(file)[1]
     note = (pb.pictures::PictureSupport).images === :absent ? "add DocBrowserImages to draw it" : "loading DocBrowserImages…"
@@ -572,7 +575,7 @@ function add_holder!(pb::PageBuilder, prefix, file::String, alt::String)
         text = first(text, inner)
         left = (inner - textwidth(text)) ÷ 2
         middle = " "^left * text * " "^(inner - textwidth(text) - left)
-        return concat(prefix, styled("│", border), styled(middle, :REPL_DocBrowser_dim), styled("│", border))
+        return concat(rest, styled("│", border), styled(middle, :REPL_DocBrowser_dim), styled("│", border))
     end
     top = length(pb.lines) + 1
     push!(pb.lines, concat(prefix, styled("╭" * "─"^inner * "╮", border)))
@@ -580,22 +583,35 @@ function add_holder!(pb::PageBuilder, prefix, file::String, alt::String)
     push!(pb.lines, line("$name image"))
     push!(pb.lines, line(note))
     push!(pb.lines, line(""))
-    push!(pb.lines, concat(prefix, styled("╰" * "─"^inner * "╯", border)))
+    push!(pb.lines, concat(rest, styled("╰" * "─"^inner * "╯", border)))
     push!(pb.holders, ImageHolder(top, col, length(pb.lines) - top + 1, inner + 2, name))
-    isempty(alt) || push!(pb.lines, concat(prefix, styled(alt, :REPL_DocBrowser_dim)))
+    isempty(alt) || push!(pb.lines, concat(rest, styled(alt, :REPL_DocBrowser_dim)))
 end
 
-# Blank rows for a picture, with its text under it. They start as its mark's line did, so a
-# picture in a note keeps the note's bar beside it.
-function add_picture!(pb::PageBuilder, prefix, (file, w, h, alt)::PictureMark)
-    w == 0 && return add_holder!(pb, prefix, file, alt)
+# Blank rows for a picture, with its text under it. The first starts as its mark's line did,
+# and the others as `rest` does, so a picture in a note keeps the note's bar beside it, and
+# one in a list has its bullet only once.
+function add_picture!(pb::PageBuilder, prefix, rest, (file, w, h, alt)::PictureMark)
+    w == 0 && return add_holder!(pb, prefix, rest, file, alt)
     col = textwidth(String(prefix)) + 1
     pic = file_picture(file, w, h, pb.width - col - 1, (pb.pictures::PictureSupport).cell)
     push!(pb.images, PageImage(length(pb.lines) + 1, col, pic, file))
-    for _ in 1:pic.rows
-        push!(pb.lines, concat(prefix))
+    for i in 1:pic.rows
+        push!(pb.lines, concat(i == 1 ? prefix : rest))
     end
-    isempty(alt) || push!(pb.lines, concat(prefix, styled(alt, :REPL_DocBrowser_dim)))
+    isempty(alt) || push!(pb.lines, concat(rest, styled(alt, :REPL_DocBrowser_dim)))
+end
+
+# What the lines after the first of a picture start with: a bar, as of a note, carries on,
+# and the rest, such as a bullet or a number, is spaces.
+function continued(prefix)
+    s = String(prefix)
+    parts = Any[]
+    for i in eachindex(s)
+        c = s[i]
+        push!(parts, c in ('│', '┃', '▌', '▎', '|') ? prefix[i:i] : " "^textwidth(c))
+    end
+    return concat(parts...)
 end
 
 # The blocks of code in `x`, in the order they are shown. Those that show without the face of
