@@ -84,6 +84,7 @@ After `docs:` you can give:
 
 - a manual page, e.g. `manual/variables` or `stdlib/Pkg/environments`, optionally with
   `#heading`;
+- a page of a package's manual, e.g. `TranscodingStreams/devnotes`, optionally with `#heading`;
 - a name, e.g. `Base.sum`;
 - the address of a page at docs.julialang.org or pkgdocs.julialang.org.
 

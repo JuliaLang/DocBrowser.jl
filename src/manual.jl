@@ -99,7 +99,12 @@ function place_target(text::AbstractString, cat::Catalog)
     m === nothing && return nothing
     ref, anchor = strip(m[1], '/'), String(strip(something(m[2], "")))
     path = place_file(ref)
-    path === nothing && return isempty(anchor) ? name_place(ref, cat) : nothing
+    if path === nothing
+        # A page of a package's manual, such as `TranscodingStreams/devnotes`.
+        t = package_place(cat, isempty(anchor) ? String(ref) : string(ref, '#', anchor))
+        t isa ManualTarget && return t
+        return isempty(anchor) ? name_place(ref, cat) : nothing
+    end
     # The online docs name the place of a docstring by its name, and then maybe its signature.
     if !isempty(anchor) && anchor_heading(cat, path, anchor) == 0
         t = name_place(first(split(anchor, '-')), cat)
@@ -145,7 +150,11 @@ function place_ref(cat::Catalog, key, heading::Int)
     key isa NameTarget && return string(display_name(key.mod), '.', key.name)
     key isa ManualTarget || return nothing
     ref = page_ref(key.path)
-    ref === nothing && return nothing
+    if ref === nothing
+        pkgpage = package_page(cat, key.path)
+        pkgpage === nothing && return nothing
+        ref = pkgpage[2]
+    end
     hs = page_headings(cat, key.path)
     heading in eachindex(hs) || return ref
     h = hs[heading]

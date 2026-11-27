@@ -75,7 +75,8 @@ code at the `julia>` prompt.
 Press `c`, or click `⧉ link` above a page, to copy a link to it, such as
 `help?> docs: manual/performance-tips#man-code-warntype`. Pasted at the `julia>` prompt, it
 opens the browser at that place. In help mode you can type `docs:` and a page (`manual/variables`,
-`stdlib/Pkg/environments`), with `#` and a heading if you like, or a name such as `Base.sum`. The
+`stdlib/Pkg/environments`, or a package's, such as `TranscodingStreams/devnotes`), with `#` and a
+heading if you like, or a name such as `Base.sum`. The
 address of a page of docs.julialang.org or pkgdocs.julialang.org works too.
 
 ## The manual

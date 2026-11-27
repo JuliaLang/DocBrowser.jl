@@ -1200,6 +1200,10 @@ end
                 api_page = DocBrowser.lookup("DocsFixture/man/api")
                 @test startswith(api_page, "# DocsFixture/man/api\nPath: $(docs.pages[2].path)\n")
                 @test occursin("DocsFixture/man/api  manual of DocsFixture: API", DocBrowser.find_docs("api"))
+                # A `docs:` link takes the same addresses, and is what copying a link to the page gives.
+                api_target = DocBrowser.ManualTarget(docs.pages[2].path, "")
+                @test DocBrowser.place_target("docs: DocsFixture/man/api", cat) == api_target
+                @test DocBrowser.place_ref(cat, api_target, 0) == "DocsFixture/man/api"
             finally
                 DocBrowser.HEADLESS[] = nothing
             end
