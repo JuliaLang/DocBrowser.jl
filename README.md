@@ -66,6 +66,7 @@ code at the `julia>` prompt.
 - In terminals that support it, click anything, scroll, and use the mouse's back and forward buttons.
   Right-click, Alt-click or Ctrl-click opens the source of a method, name, package or link.
 - Drag across the documentation to copy text, double-click to copy a word, triple-click for a line.
+- Click a picture to open its image in the system's app for it.
   To select with your terminal instead, hold the key it uses for this (Shift in most terminals,
   Option in iTerm2, Fn in Terminal.app).
 
@@ -74,7 +75,8 @@ code at the `julia>` prompt.
 Press `c`, or click `⧉ link` above a page, to copy a link to it, such as
 `help?> docs: manual/performance-tips#man-code-warntype`. Pasted at the `julia>` prompt, it
 opens the browser at that place. In help mode you can type `docs:` and a page (`manual/variables`,
-`stdlib/Pkg/environments`), with `#` and a heading if you like, or a name such as `Base.sum`. The
+`stdlib/Pkg/environments`, or a package's, such as `TranscodingStreams/devnotes`), with `#` and a
+heading if you like, or a name such as `Base.sum`. The
 address of a page of docs.julialang.org or pkgdocs.julialang.org works too.
 
 ## The manual
@@ -124,7 +126,11 @@ browser looked and why it found no more.
 - `JULIA_DOCBROWSER_AUTODOWNLOAD`: `no` stops the browser from downloading packages' manuals
   by itself. The button on a package's page still does.
 - `JULIA_DOCBROWSER_IMAGES`: `no` stops the browser from drawing pictures, such as the Julia
-  logo, in terminals that have the kitty graphics protocol. It draws them with text instead.
+  logo and the images in manuals, in terminals that have the kitty graphics protocol. It
+  draws them with text instead. PNG images are drawn as they are. SVG, JPEG, TIFF and some
+  other formats need the DocBrowserImages package installed (`pkg> add DocBrowserImages`),
+  which the browser loads when a page has such an image. VS Code's terminal draws pictures
+  only with `terminal.integrated.enableImages` on and GPU acceleration in use.
 - `GITHUB_TOKEN`: raises GitHub's limit on the requests that finding those manuals makes.
 
 ## For AI agents

@@ -70,11 +70,38 @@ struct Picture
 end
 
 # A picture on a page, by the line and column of its top left cell. The page leaves the cells
-# under it blank.
+# under it blank. `file` is the PNG file it is read from, or empty for one the browser draws.
 struct PageImage
     line::Int
     col::Int
     picture::Picture
+    file::String
+end
+PageImage(line::Int, col::Int, picture::Picture) = PageImage(line, col, picture, "")
+
+"""
+    PictureSupport
+
+What a page needs to know to make room for pictures from files: the height and width of
+the terminal's cells, and the numbers of the pictures it could not draw. `images` is where
+DocBrowserImages is: `:absent`, `:installed`, `:loading`, `:loaded` or `:failed`, and a page
+with an image that only it reads sets `wanted`.
+"""
+struct PictureSupport
+    cell::Tuple{Int,Int}
+    refused::Set{Int}
+    images::Symbol
+    wanted::Base.RefValue{Bool}
+end
+
+# A box on a page where an image of the format `format` will be drawn once DocBrowserImages
+# has read it: `rows` lines from `line`, `cols` columns from `col`.
+struct ImageHolder
+    line::Int
+    col::Int
+    rows::Int
+    cols::Int
+    format::String
 end
 
 struct Page
@@ -83,6 +110,7 @@ struct Page
     source::Union{Nothing,SourceTarget}
     headings::Vector{Int}
     images::Vector{PageImage}
+    holders::Vector{ImageHolder}
 end
 
 struct PageBuilder
@@ -90,11 +118,14 @@ struct PageBuilder
     spots::Vector{Spot}
     width::Int
     images::Vector{PageImage}
+    holders::Vector{ImageHolder}
+    pictures::Union{Nothing,PictureSupport} # nothing where the terminal draws no pictures
 end
-PageBuilder(width::Int) = PageBuilder(AnnotatedString{String}[], Spot[], width, PageImage[])
+PageBuilder(width::Int, pictures::Union{Nothing,PictureSupport}=nothing) =
+    PageBuilder(AnnotatedString{String}[], Spot[], width, PageImage[], ImageHolder[], pictures)
 
 Page(pb::PageBuilder, source=nothing) =
-    Page(pb.lines, sort_by!(pb.spots, s -> (s.line, first(s.cols))), source, heading_lines(pb.lines), pb.images)
+    Page(pb.lines, sort_by!(pb.spots, s -> (s.line, first(s.cols))), source, heading_lines(pb.lines), pb.images, pb.holders)
 
 is_heading_face(v) = v isa Symbol && startswith(String(v), "markdown_h") && v !== :markdown_hrule
 
@@ -421,14 +452,18 @@ function mention_target(cat::Catalog, name::AbstractString)
 end
 
 """
-    add_markdown!(pb, md, ctx, cat; contents=false)
+    add_markdown!(pb, md, ctx, cat; contents=false, dirs=String[])
 
 Render `md`, making links of the names it mentions, which are looked up from module `ctx`.
 Blocks of code get a ⧉ that copies them. With `contents`, a page with several
-headings starts with links to them.
+headings starts with links to them. An image that is a paragraph of its own is drawn as a
+picture, where the terminal draws them and the image is a PNG file in one of `dirs`.
 """
-function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents::Bool=false)
+function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents::Bool=false,
+                       dirs::Vector{String}=String[])
     refs = ref_targets(md)
+    marks = pb.pictures === nothing || isempty(dirs) || !(md isa Markdown.MD) ? PictureMark[] :
+        picture_marks!(md, dirs, pb.pictures)
     lines = render_markdown(md, pb.width)
     if contents
         titles = [strip(String(lines[i])) for i in heading_lines(lines)]
@@ -449,6 +484,13 @@ function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents:
     lang = ""
     left = 0 # lines still to come of a block whose length is known
     for line in lines
+        # A page can have the mark's character itself, so only a mark that was made counts.
+        if left == 0 && !isempty(marks) && (m = match(PICTURE_MARK, String(line))) !== nothing &&
+                (n = tryparse(Int, m[2])) !== nothing && n in eachindex(marks)
+            prefix = SubString(line, 1, ncodeunits(m[1]))
+            add_picture!(pb, prefix, continued(prefix), marks[n])
+            continue
+        end
         code = is_code_line(line)
         if left == 0 && code && !isempty(nodes)
             isempty(block) || (add_copy_mark!(pb, block, lang); empty!(block))
@@ -472,6 +514,104 @@ function add_markdown!(pb::PageBuilder, md, ctx::Module, cat::Catalog; contents:
         inblock && push!(block, String(line))
     end
     isempty(block) || add_copy_mark!(pb, block, lang)
+end
+
+# An image to draw as a picture: its file, its width and height in pixels, and its text.
+const PictureMark = Tuple{String,Int,Int,String}
+
+# The word that holds the place of the `n`th picture while the Markdown is rendered, and what
+# comes before it on its line, such as the bar of a note.
+picture_mark(n::Int) = "￼$n"
+const PICTURE_MARK = Regex("^(.*?)￼(\\d+)\\s*\$")
+
+# The images that can be drawn as pictures, each of which is replaced by its mark. They are
+# those that are paragraphs of their own, or end one, as an image on the line after its text
+# does. Then the mark goes on a line of its own under the text.
+function picture_marks!(md::Markdown.MD, dirs::Vector{String}, pics::PictureSupport)
+    found = PictureMark[]
+    walk_md(md) do x
+        x isa Markdown.Paragraph || return
+        i = findlast(y -> !(y isa AbstractString && isempty(strip(y))), x.content)
+        i !== nothing && x.content[i] isa Markdown.Image || return
+        img = x.content[i]::Markdown.Image
+        text = x.content[1:i-1]
+        alone = all(y -> y isa AbstractString && isempty(strip(y)), text)
+        file = image_file(img.url, dirs)
+        (file === nothing || picture_id(file) in pics.refused) && return
+        size = png_size(file)
+        if size === nothing
+            png = read_image(file)
+            if png === nothing
+                format = image_format(file)
+                format === nothing && return
+                if format[2] && pics.images ∉ (:loaded, :failed)
+                    # A box holds its place until DocBrowserImages can draw it.
+                    pics.wanted[] = true
+                    size = (0, 0)
+                else
+                    alone && (x.content = Any[isempty(img.alt) ? "($(format[1]) image)" : "($(format[1]) image: $(img.alt))"])
+                    return
+                end
+            else
+                size = (png[2], png[3])
+            end
+        end
+        push!(found, (file, size[1], size[2], img.alt))
+        mark = picture_mark(length(found))
+        x.content = alone ? Any[mark] : Any[text..., Markdown.LineBreak(), mark]
+    end
+    return found
+end
+
+# A box where an image will be drawn, which says what draws it, with the image's text under it.
+function add_holder!(pb::PageBuilder, prefix, rest, file::String, alt::String)
+    col = textwidth(String(prefix)) + 1
+    name = image_format(file)[1]
+    note = (pb.pictures::PictureSupport).images === :absent ? "add DocBrowserImages to draw it" : "loading DocBrowserImages…"
+    # as wide as leaves the same space either side of the note
+    inner = clamp(max(36 + isodd(textwidth(note)), textwidth(note) + 4), 1, max(1, pb.width - col - 3))
+    border = :REPL_DocBrowser_border
+    function line(text)
+        text = first(text, inner)
+        left = (inner - textwidth(text)) ÷ 2
+        middle = " "^left * text * " "^(inner - textwidth(text) - left)
+        return concat(rest, styled("│", border), styled(middle, :REPL_DocBrowser_dim), styled("│", border))
+    end
+    top = length(pb.lines) + 1
+    push!(pb.lines, concat(prefix, styled("╭" * "─"^inner * "╮", border)))
+    push!(pb.lines, line(""))
+    push!(pb.lines, line("$name image"))
+    push!(pb.lines, line(note))
+    push!(pb.lines, line(""))
+    push!(pb.lines, concat(rest, styled("╰" * "─"^inner * "╯", border)))
+    push!(pb.holders, ImageHolder(top, col, length(pb.lines) - top + 1, inner + 2, name))
+    isempty(alt) || push!(pb.lines, concat(rest, styled(alt, :REPL_DocBrowser_dim)))
+end
+
+# Blank rows for a picture, with its text under it. The first starts as its mark's line did,
+# and the others as `rest` does, so a picture in a note keeps the note's bar beside it, and
+# one in a list has its bullet only once.
+function add_picture!(pb::PageBuilder, prefix, rest, (file, w, h, alt)::PictureMark)
+    w == 0 && return add_holder!(pb, prefix, rest, file, alt)
+    col = textwidth(String(prefix)) + 1
+    pic = file_picture(file, w, h, pb.width - col - 1, (pb.pictures::PictureSupport).cell)
+    push!(pb.images, PageImage(length(pb.lines) + 1, col, pic, file))
+    for i in 1:pic.rows
+        push!(pb.lines, concat(i == 1 ? prefix : rest))
+    end
+    isempty(alt) || push!(pb.lines, concat(rest, styled(alt, :REPL_DocBrowser_dim)))
+end
+
+# What the lines after the first of a picture start with: a bar, as of a note, carries on,
+# and the rest, such as a bullet or a number, is spaces.
+function continued(prefix)
+    s = String(prefix)
+    parts = Any[]
+    for i in eachindex(s)
+        c = s[i]
+        push!(parts, c in ('│', '┃', '▌', '▎', '|') ? prefix[i:i] : " "^textwidth(c))
+    end
+    return concat(parts...)
 end
 
 # The blocks of code in `x`, in the order they are shown. Those that show without the face of

@@ -52,15 +52,18 @@ lost the SGR encoding while still reporting, as VS Code's does when it reattache
 struct LegacyMouseEvent end
 
 """
-    GraphicsEvent(id, ok)
+    GraphicsEvent(id, ok, lost=false)
 
 The terminal's answer about the picture numbered `id`, or about whether it draws pictures at
-all: it has done what was asked, or could not.
+all: it has done what was asked, or could not. `lost` is whether it could not because it no
+longer has the picture.
 """
 struct GraphicsEvent
     id::Int
     ok::Bool
+    lost::Bool
 end
+GraphicsEvent(id::Int, ok::Bool) = GraphicsEvent(id, ok, false)
 
 """
     CellSizeEvent(height, width)
@@ -171,7 +174,7 @@ function skip_string(io::IO, kind::Char)
     body = String(take!(buf))
     if kind == '_'
         m = match(r"^Gi=(\d{1,10})[^;]*;(.*)$", body)
-        return m === nothing ? nothing : GraphicsEvent(parse(Int, m[1]), m[2] == "OK")
+        return m === nothing ? nothing : GraphicsEvent(parse(Int, m[1]), m[2] == "OK", startswith(m[2], "ENOENT"))
     end
     m = match(r"^11;([\x21-\x7e]{1,100})$", body)
     return m === nothing ? nothing : SchemeEvent(nothing, m[1])

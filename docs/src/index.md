@@ -70,6 +70,7 @@ forward buttons.
 - Right-click (or Alt- or Ctrl-click) opens the source of what you click.
 - Click `⧉` beside a block of code to copy it.
 - Drag to copy text; double-click copies a word, triple-click a line.
+- Click a picture to open its image in the system's app for it.
 - To select with your terminal instead, hold Shift while you drag (Option in iTerm2, Fn in
   Terminal.app).
 
@@ -83,6 +84,7 @@ After `docs:` you can give:
 
 - a manual page, e.g. `manual/variables` or `stdlib/Pkg/environments`, optionally with
   `#heading`;
+- a page of a package's manual, e.g. `TranscodingStreams/devnotes`, optionally with `#heading`;
 - a name, e.g. `Base.sum`;
 - the address of a page at docs.julialang.org or pkgdocs.julialang.org.
 
@@ -105,7 +107,7 @@ to know why, `DocBrowser.explain_docs("Name")` says where the browser looked.
 | Environment variable | Effect |
 |:---------------------|:-------|
 | `JULIA_DOCBROWSER_AUTODOWNLOAD=no` | don't download missing package manuals in the background |
-| `JULIA_DOCBROWSER_IMAGES=no` | don't draw pictures, such as the Julia logo, in terminals with the kitty graphics protocol |
+| `JULIA_DOCBROWSER_IMAGES=no` | don't draw pictures, such as the Julia logo and the images in manuals, in terminals with the kitty graphics protocol (SVG, JPEG, TIFF and others need the DocBrowserImages package installed; VS Code's terminal draws them only with `terminal.integrated.enableImages` on and GPU acceleration in use) |
 | `JULIA_DOCBROWSER_SEARCH_URL` | the web search for packages with no known repository, with `%s` for the query (default DuckDuckGo) |
 | `JULIA_EDITOR` | the editor that `e` opens |
 

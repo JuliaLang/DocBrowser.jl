@@ -155,6 +155,14 @@ Base.@kwdef mutable struct Browser
     awaited::Vector{Picture} = Picture[]
     sent::Float64 = 0.0
     gave_up::Bool = false
+    # Whether the terminal said it draws pictures, and the numbers of those it could not draw.
+    draws::Bool = false
+    refused::Set{Int} = Set{Int}()
+    # Where DocBrowserImages is, as pages are told it, or `:unknown` before a page asks, and
+    # whether a page wants it.
+    images::Symbol = :unknown
+    images_wanted::Base.RefValue{Bool} = Ref(false)
+    images_task::Union{Nothing,Task} = nothing
     # Where pictures go in the frame being drawn, and where they are on the screen.
     placements::Vector{Placement} = Placement[]
     shown::Vector{Placement} = Placement[]
@@ -732,6 +740,21 @@ function open_url(b::Browser, url::String)
     end
 end
 
+# Opens the file of a picture in the system's app for its format.
+function open_image(b::Browser, file::String)
+    if URL_OPENER[] === web_browser && haskey(ENV, "SSH_CONNECTION")
+        # The app would open on the remote machine.
+        return (b.status = "The image is on the remote machine: " * Base.contractuser(file); nothing)
+    end
+    try
+        URL_OPENER[](file)
+        b.status = "Opened " * basename(file)
+    catch err
+        err isa InterruptException && rethrow()
+        b.status = "Could not open " * basename(file)
+    end
+end
+
 function edit_source!(b::Browser, t::SourceTarget)
     isfile(t.file) || return (b.status = "Source file not found: " * Base.contractuser(t.file); nothing)
     suspend(b) do
@@ -765,12 +788,31 @@ function load_package!(b::Browser, id::PkgId; then::String="")
     # The precompile workload must not load whatever the active project depends on.
     Base.generating_output() && return
     loading(b) && return (b.status = "Already " * lowercasefirst(b.loading); nothing)
-    b.console = ["julia> import " * id.name]
     start = current_key(b)
+    function done(ok)
+        ok || return
+        b.console = nothing
+        # Go to the package, or to the name asked for in it, only if nothing else was opened
+        # while it loaded.
+        go = current_key(b) == LoadTarget(id)
+        stayed = current_key(b) == start
+        # The package's bindings are only visible in the latest world.
+        b.world = Base.get_world_counter()
+        in_world(show_loaded!, b, id, go && isempty(then))
+        isempty(then) || !stayed || in_world(open_name!, b, then)
+    end
+    load_in_console(done, b, id, () -> import_package(id))
+    return
+end
+
+# Precompiles `id` and then loads it with `load`, showing what that prints in the console
+# panel, and then calls `done(ok)`.
+function load_in_console(done, b::Browser, id::PkgId, load)
+    b.console = ["julia> import " * id.name]
     # Loading prints nothing while it precompiles, which can take minutes, so say so.
-    precompiled = dynamic(Base.isprecompiled)(id)::Bool
+    precompiled = @attempt(dynamic(Base.isprecompiled)(id)::Bool, false)
     what = Ref((precompiled ? "Loading " : "Precompiling ") * id.name)
-    function load()
+    function steps()
         # Precompiling first, as the import would, runs in other processes, and the browser
         # keeps working meanwhile. Without this internal function the import does it.
         precompiled || try
@@ -785,21 +827,46 @@ function load_package!(b::Browser, id::PkgId; then::String="")
             b.modal = what[] * "…"
             b.live && in_world(draw, b)
         end
-        import_package(id)
+        load()
     end
-    function done(ok)
-        ok || return
-        b.console = nothing
-        # Go to the package, or to the name asked for in it, only if nothing else was opened
-        # while it loaded.
-        go = current_key(b) == LoadTarget(id)
-        stayed = current_key(b) == start
-        # The package's bindings are only visible in the latest world.
-        b.world = Base.get_world_counter()
-        in_world(show_loaded!, b, id, go && isempty(then))
-        isempty(then) || !stayed || in_world(open_name!, b, then)
+    in_console(steps, done, b, what)
+end
+
+# Loads DocBrowserImages, for a page with an image that only it reads, and then draws the
+# pages again with their pictures. It is precompiled first, with its extension, quietly in
+# other processes, as that can take minutes that nobody asked for. Meanwhile the browser
+# can be used and closed, and if it closes the package is loaded the next time it is needed.
+function load_images!(b::Browser)
+    Base.generating_output() && return
+    b.images = :loading
+    ext = PkgId(Base.uuid5(PkgId(@__MODULE__).uuid, "DocBrowserImagesExt"), "DocBrowserImagesExt")
+    ids = [IMAGES_PACKAGE, ext]
+    b.images_task = @async try
+        all(i -> @attempt(dynamic(Base.isprecompiled)(i)::Bool, false), ids) ||
+            dynamic(Base.Precompilation.precompilepkgs)(ids; _from_loading=true, ignore_loaded=false, io=IOBuffer())
+        # one load at a time, as each takes over what the session prints
+        while @lock b.lock (b.live && loading(b))
+            sleep(0.2)
+        end
+        @lock b.lock begin
+            b.live || (b.images = :installed; return)
+            load_in_console(b, IMAGES_PACKAGE, () -> dynamic(Base.require)(IMAGES_PACKAGE)) do ok
+                b.images = ok && images_loaded() ? :loaded : :failed
+                ok && (b.console = nothing; b.status = "Loaded DocBrowserImages")
+                b.world = Base.get_world_counter()
+                @lock READ_IMAGES_LOCK empty!(READ_IMAGES)
+                forget_picture_pages!(b)
+            end
+        end
+    catch err
+        err isa InterruptException && rethrow()
+        @lock b.lock begin
+            b.images = :failed
+            b.status = "Could not precompile DocBrowserImages"
+            forget_picture_pages!(b)
+            b.live && in_world(draw, b)
+        end
     end
-    in_console(load, done, b, what)
     return
 end
 
@@ -853,6 +920,9 @@ function in_console(f, done, b::Browser, what::Ref{String})
             @lock b.lock begin
                 b.loading = ""
                 b.modal = ""
+                # The terminal's answers about pictures could not be read while the package
+                # loaded, so the wait for them starts again.
+                isempty(b.awaited) || (b.sent = time())
                 try
                     done(ok)
                 catch err
@@ -1038,7 +1108,24 @@ end
 
 # `pic` if the terminal has taken it, or was sent it and should still answer. The terminal
 # reads the picture before whatever is written next, so it is drawn without waiting.
-expected(b::Browser, pic::Picture) = pic in b.pictures || !b.gave_up && pic in b.awaited ? pic : nothing
+expected(b::Browser, pic::Picture) = has_picture(b.pictures, pic) || !b.gave_up && has_picture(b.awaited, pic) ? pic : nothing
+
+# A picture from a file is the same one at any size.
+has_picture(pics::Vector{Picture}, pic::Picture) = any(p -> p.id == pic.id, pics)
+
+# What pages need to make room for pictures from files, if the terminal draws them.
+function picture_support(b::Browser)
+    b.draws && !b.gave_up || return nothing
+    if images_loaded()
+        b.images = :loaded
+    elseif b.images === :unknown
+        b.images = Base.identify_package(IMAGES_PACKAGE.name) == IMAGES_PACKAGE ? :installed : :absent
+    end
+    return PictureSupport(b.cell, b.refused, b.images, b.images_wanted)
+end
+
+# The pages whose pictures, or room for them, change with what the terminal says.
+forget_picture_pages!(b::Browser) = filter!(kv -> !(kv.first[1] === :start || kv.first[1] isa ManualTarget), b.pages)
 
 page_flags(b::Browser, key) = dynamic(get)(b.flags, key, Set{Symbol}())::Set{Symbol}
 # The same set, kept for the page, so that changes to it stay.
@@ -1052,7 +1139,7 @@ function page(b::Browser, key, width::Int)
             key isa ModuleTarget ? module_page(b.cat, key.mod, width) :
             key isa SectionTarget ? section_page(b.cat, key.role, width) :
             key isa LoadTarget ? unloaded_page(b.cat, key.id, width, key.then) :
-            key isa ManualTarget ? manual_page(b.cat, key.path, width) :
+            key isa ManualTarget ? manual_page(b.cat, key.path, width, picture_support(b)) :
             key === :start ? start_page(b.cat, width, b.tips[b.tip], b.tip, expected(b, logo_picture(b.cell))) :
             key === :help ? help_page(b.cat, width) : Page(PageBuilder(width))
         catch err
@@ -1065,6 +1152,10 @@ function page(b::Browser, key, width::Int)
             end
             Page(pb)
         end
+    end
+    if b.images_wanted[]
+        b.images_wanted[] = false
+        b.images === :installed && load_images!(b)
     end
     return p::Page
 end
@@ -1246,6 +1337,11 @@ function describe(b::Browser, action)
         return "✕ close the browser (q)"
     elseif kind === :scrollbar
         return "click or drag to scroll"
+    elseif kind === :image
+        return "$(basename(action[2])) · click to open it in its app"
+    elseif kind === :holder
+        b.images === :absent || return "$(action[2]) image · drawn here once DocBrowserImages has loaded"
+        return "$(action[2]) image · drawn here with DocBrowserImages: pkg> add DocBrowserImages, then open the browser again"
     end
     return nothing
 end
@@ -1754,8 +1850,17 @@ function draw_doc(b::Browser, x::Int, w::Int)
     # A picture shows the rows of it that are in view, if the pane is wide enough for it.
     for img in p.images
         top, bottom = max(img.line, b.doc_scroll + 1), min(img.line + img.picture.rows - 1, b.doc_scroll + n)
-        expected(b, img.picture) !== nothing && top <= bottom && img.col + img.picture.cols - 1 <= pw || continue
+        top <= bottom || continue
+        isempty(img.file) || send_file_picture(b, img)
+        expected(b, img.picture) !== nothing && img.col + img.picture.cols - 1 <= pw || continue
         push!(b.placements, Placement(img.picture, top - b.doc_scroll + 2, x + img.col - 1, top - img.line, bottom - top + 1))
+        isempty(img.file) && continue
+        for r in top:bottom
+            push!(b.hits, Hit(r - b.doc_scroll + 2, (x + img.col - 1):(x + img.col + img.picture.cols - 2), (:image, img.file)))
+        end
+    end
+    for h in p.holders, r in max(h.line, b.doc_scroll + 1):min(h.line + h.rows - 1, b.doc_scroll + n)
+        push!(b.hits, Hit(r - b.doc_scroll + 2, (x + h.col - 1):(x + h.col + h.cols - 2), (:holder, h.format)))
     end
     # A scroll bar in the last column, when the page does not fit.
     thumb = 0:-1
@@ -1831,9 +1936,9 @@ end
 function frame(b::Browser)
     empty!(b.hits)
     empty!(b.placements)
-    if !b.gave_up && !isempty(b.awaited) && time() - b.sent > PICTURE_WAIT
+    if !b.gave_up && !isempty(b.awaited) && !loading(b) && time() - b.sent > PICTURE_WAIT
         b.gave_up = true
-        filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with room for its picture
+        forget_picture_pages!(b)
     end
     H, W = b.height, b.width
     if H < 6 || W < 24
@@ -1876,6 +1981,10 @@ end
 
 ansi(s::AnnotatedString, color::Bool=true) = sprint(print, s; context = :color => color)
 
+# Each placement with its number, which counts the placements of its picture, so that a
+# picture keeps its number when another one leaves the screen.
+numbered(ps::Vector{Placement}) = [(count(q -> q.picture.id == p.picture.id, view(ps, 1:i-1)) + 1, p) for (i, p) in enumerate(ps)]
+
 # Writes to the terminal, whose type is not known. The call is left to run time, since a
 # package that adds a method of `write` for its own kind of `IO` would otherwise invalidate
 # everything that writes, from the handling of keys up.
@@ -1899,11 +2008,17 @@ function draw(b::Browser)
     end
     # A row is written by deleting its line, and what that does to a picture on it or below
     # it is up to the terminal, so the pictures are all put back after any row is written.
+    # A placement put back under its number moves, so only those that are gone are taken away.
+    # VS Code's terminal deletes the whole picture with a placement, and the text written over
+    # a placement already removes it there, so none are taken away.
     if b.placements != b.shown || written && !isempty(b.shown)
-        for (n, p) in enumerate(b.shown)
-            hide_placement(buf, n, p)
+        placed = numbered(b.placements)
+        if get(ENV, "TERM_PROGRAM", "") != "vscode"
+            for (n, p) in numbered(b.shown)
+                any(((m, q),) -> m == n && q.picture.id == p.picture.id, placed) || hide_placement(buf, n, p)
+            end
         end
-        for (n, p) in enumerate(b.placements)
+        for (n, p) in placed
             show_placement(buf, n, p)
         end
         b.shown = copy(b.placements)
@@ -1959,8 +2074,12 @@ function enter_screen(b::Browser)
     put(b, ENTER_SCREEN)
     rich_colours() && put(b, scheme_reports(true))
     # Entering the screen throws away the pictures in some terminals, such as Ghostty, so
-    # those the terminal had are sent again.
-    isempty(b.pictures) || send_logos!(b, splice!(b.pictures, eachindex(b.pictures)))
+    # those the terminal had are sent again: the logos now, and images when they come into view.
+    if !isempty(b.pictures)
+        logos = filter(p -> p.id in (logo_picture(b.cell).id, mark_picture(b.cell).id), b.pictures)
+        empty!(b.pictures)
+        isempty(logos) || send_logos!(b, logos)
+    end
     flush(b.out)
     b.prev = String[]
     empty!(b.shown)
@@ -2996,15 +3115,36 @@ function send_logos!(b::Browser, pics::Vector{Picture})
     b.sent, b.gave_up = time(), false
 end
 
+# Sends the picture of an image file the first time it comes into view, so that a long page
+# does not send all of its pictures at once.
+function send_file_picture(b::Browser, img::PageImage)
+    pic = img.picture
+    (has_picture(b.pictures, pic) || has_picture(b.awaited, pic) || pic.id in b.refused) && return
+    png = read_image(img.file)
+    data = png === nothing ? @attempt(read(img.file), UInt8[]) : png[1]
+    if isempty(data)
+        push!(b.refused, pic.id)
+        forget_picture_pages!(b)
+        return
+    end
+    buf = IOBuffer()
+    send_picture(buf, pic, data; png=true)
+    put(b, take!(buf))
+    isempty(b.awaited) && (b.sent = time())
+    push!(b.awaited, pic)
+    return
+end
+
 # The terminal said that it draws pictures, so it is sent the browser's. Or it answered for
 # one of them: it has taken it, and the picture can be drawn, or it could not draw it, and
 # the picture is left out from then on.
 function handle!(b::Browser, ev::GraphicsEvent)
     if ev.id == GRAPHICS_QUERY_ID
         ev.ok && isempty(b.awaited) && isempty(b.pictures) || return false
+        b.draws = true
         send_logos!(b, [logo_picture(b.cell), mark_picture(b.cell)])
         Base.inferencebarrier(flush)(b.out)
-        filter!(kv -> kv.first[1] !== :start, b.pages) # drawn without room for its picture
+        forget_picture_pages!(b) # drawn without room for pictures
         return true
     end
     # iTerm2 answers for a picture sent in pieces without its number. Answers come in the
@@ -3017,9 +3157,21 @@ function handle!(b::Browser, ev::GraphicsEvent)
         # A picture it had taken, which it could not draw.
         j = ev.ok ? nothing : findfirst(pic -> pic.id == ev.id, b.pictures)
         j === nothing && return false
-        deleteat!(b.pictures, j)
+        pic = popat!(b.pictures, j)
+        # VS Code's terminal throws a picture away when one of its placements is taken away,
+        # so a picture the terminal lost is sent again. One from a file is sent when next drawn.
+        if ev.lost
+            filter!(p -> p.picture.id != ev.id, b.shown)
+            pic.id in (logo_picture(b.cell).id, mark_picture(b.cell).id) && send_logos!(b, [pic])
+            return true
+        end
     end
-    filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with or without its picture
+    if ev.ok
+        filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with or without its picture
+    else
+        push!(b.refused, pic.id)
+        forget_picture_pages!(b)
+    end
     return true
 end
 
@@ -3246,6 +3398,8 @@ function click!(b::Browser, h::Hit, double::Bool)
         b.query === nothing && start_search!(b)
     elseif kind === :copylink
         copy_place!(b)
+    elseif kind === :image
+        open_image(b, a[2])
     elseif kind === :focus
         a[2] === :names && side_placeholder(b) !== nothing && return false
         b.focus = a[2]
@@ -3591,7 +3745,25 @@ else
     watch_resize(f) = Timer(_ -> f(), 0.05; interval=0.05)
 end
 
+# Julia's precompilation reads keys from a terminal's input, and leaves it out of raw mode,
+# unless something else holds this lock, which Julia has from 1.15.
+function raw_mode_lock(term::REPL.Terminals.TextTerminal)
+    s = hasproperty(term, :in_stream) ? getproperty(term, :in_stream) : nothing
+    return s isa Base.TTY && hasfield(Base.TTY, :raw_lock) ? getfield(s, :raw_lock)::ReentrantLock : nothing
+end
+
 function run_screen!(b::Browser)
+    # Held while the browser has the screen, as a package it loads may be precompiled.
+    rawlock = raw_mode_lock(b.term)
+    holds = rawlock !== nothing && trylock(rawlock)
+    try
+        run_screen_loop!(b)
+    finally
+        holds && unlock(rawlock::ReentrantLock)
+    end
+end
+
+function run_screen_loop!(b::Browser)
     enter_screen(b)
     b.live = true
     timer = watch_resize(() -> tick(b))

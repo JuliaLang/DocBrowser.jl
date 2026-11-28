@@ -57,13 +57,111 @@ function logo_pixels(pic::Picture)
     return pixels
 end
 
-# Gives the terminal the pixels of `pic` to keep, without drawing them. They go in pieces of
-# at most 4096 bytes, and the terminal answers once it has them all.
-function send_picture(io::IO, pic::Picture, pixels::Vector{UInt8})
+## Pictures from files ##
+
+# Larger files take too long to send, and the terminal shrinks them to fit anyway.
+const MAX_PICTURE_BYTES = 4 * 1024 * 1024
+# A picture is no taller than this many rows, so that a tall one does not fill the pane.
+const MAX_PICTURE_ROWS = 30
+
+# The file that an image's address names, in the first of `dirs` that has it. An address on
+# the web names no file.
+function image_file(url::AbstractString, dirs::Vector{String})
+    occursin(r"^[a-z][a-z0-9+.-]*:"i, url) && return nothing
+    rel = replace(url, r"[?#].*"s => "")
+    isempty(rel) && return nothing
+    for dir in dirs
+        file = normpath(dir, rel)
+        isfile(file) && return file
+    end
+    return nothing
+end
+
+"""
+    png_size(file) -> Union{Nothing,Tuple{Int,Int}}
+
+The width and height in pixels of the PNG image in `file`, or `nothing` if it is not one or
+is too large to send. The terminal reads PNG itself, so other formats are left out.
+"""
+function png_size(file::String)
+    head = @attempt open(io -> filesize(io) <= MAX_PICTURE_BYTES ? read(io, 24) : UInt8[], file) return nothing
+    length(head) == 24 && head[1:8] == b"\x89PNG\r\n\x1a\n" && head[13:16] == b"IHDR" || return nothing
+    w, h = (Int(ntoh(reinterpret(UInt32, head[i:i+3])[1])) for i in (17, 21))
+    return w > 0 && h > 0 ? (w, h) : nothing
+end
+
+# The formats that the terminal cannot read, by the ends of their files' names, with the
+# name shown for them and whether DocBrowserImages reads them.
+const IMAGE_FORMATS = Dict("jpg" => ("JPEG", true), "jpeg" => ("JPEG", true),
+    "tif" => ("TIFF", true), "tiff" => ("TIFF", true), "qoi" => ("QOI", true),
+    "pbm" => ("PBM", true), "pgm" => ("PGM", true), "ppm" => ("PPM", true),
+    "exr" => ("EXR", true), "svg" => ("SVG", true), "gif" => ("GIF", false), "webp" => ("WebP", false))
+
+# The package that reads those formats.
+const IMAGES_PACKAGE = Base.PkgId(Base.UUID("c03421d8-dabe-4877-8210-1ac3ce4167c7"), "DocBrowserImages")
+
+"""
+    png_image(file) -> (png, width, height)
+
+The image in `file` as the contents of a PNG file, with its width and height in pixels. The
+extension for DocBrowserImages adds the method, once that package is loaded.
+"""
+function png_image end
+
+# in the latest world, since a task that started before the load would not see the method
+images_loaded() = hasmethod(png_image, Tuple{String}; world=Base.get_world_counter())
+
+# The images that were read, by file and the time it was changed, so that a page drawn
+# again does not read them again, but an edited file is read again. A few are kept.
+const READ_IMAGES = Dict{Tuple{String,Float64},Union{Nothing,Tuple{Vector{UInt8},Int,Int}}}()
+const READ_IMAGES_LOCK = ReentrantLock()
+const MAX_READ_IMAGES = 32
+
+image_format(file::String) = get(IMAGE_FORMATS, lowercase(lstrip(splitext(file)[2], '.')), nothing)
+
+"""
+    read_image(file) -> Union{Nothing,Tuple{Vector{UInt8},Int,Int}}
+
+The image in `file`, which is not a PNG file, as the contents of one with its width and
+height, if DocBrowserImages is loaded and can read it.
+"""
+function read_image(file::String)
+    format = image_format(file)
+    (format === nothing || !format[2] || !images_loaded()) && return nothing
+    filesize(file) <= MAX_PICTURE_BYTES || return nothing
+    key = (file, mtime(file))
+    return @lock READ_IMAGES_LOCK get!(READ_IMAGES, key) do
+        length(READ_IMAGES) >= MAX_READ_IMAGES && empty!(READ_IMAGES)
+        # called in the latest world, so that adding the method invalidates no compiled code
+        png = @attempt Base.invokelatest(png_image, file)::Tuple{Vector{UInt8},Int,Int}
+        png === nothing || length(png[1]) <= MAX_PICTURE_BYTES && png[2] > 0 && png[3] > 0 ? png : nothing
+    end
+end
+
+# The number a file's picture is kept under. It is above those of the logos.
+picture_id(file::String) = 0x01000000 + Int(hash(file) % 0x7effffff)
+
+# A picture of a `w` by `h` image, as wide as it is in pixels, if that is no more than
+# `maxcols` cells, and as tall as keeps its shape.
+function file_picture(file::String, w::Int, h::Int, maxcols::Int, (ch, cw)::Tuple{Int,Int})
+    cols = clamp(round(Int, w / cw), 1, max(1, maxcols))
+    rows = max(1, round(Int, cols * cw * h / (w * ch)))
+    if rows > MAX_PICTURE_ROWS
+        rows = MAX_PICTURE_ROWS
+        cols = max(1, round(Int, rows * ch * w / (h * cw)))
+    end
+    return Picture(picture_id(file), cols, rows, w, h)
+end
+
+# Gives the terminal the pixels of `pic` to keep, without drawing them, four bytes each, or
+# with `png` the contents of a PNG file. They go in pieces of at most 4096 bytes, and the
+# terminal answers once it has them all.
+function send_picture(io::IO, pic::Picture, pixels::Vector{UInt8}; png::Bool=false)
     data = base64encode(pixels)
     n = ncodeunits(data)
     for i in 1:4096:n
-        i == 1 && print(io, "\e_Ga=t,f=32,i=", pic.id, ",s=", pic.width, ",v=", pic.height, ",")
+        i == 1 && png && print(io, "\e_Ga=t,f=100,i=", pic.id, ",")
+        i == 1 && !png && print(io, "\e_Ga=t,f=32,i=", pic.id, ",s=", pic.width, ",v=", pic.height, ",")
         i == 1 || print(io, "\e_G")
         print(io, "m=", i + 4096 > n ? 0 : 1, ";", SubString(data, i, min(i + 4095, n)), "\e\\")
     end
@@ -86,9 +184,10 @@ end
 # Draws placement number `n`. The terminal does not move the cursor (`C=1`), and answers only
 # if it fails (`q=1`).
 function show_placement(io::IO, n::Int, p::Placement)
-    cell = p.picture.height ÷ p.picture.rows
+    h, rows = p.picture.height, p.picture.rows
+    y = p.skip * h ÷ rows
     print(io, "\e[", p.row, ";", p.col, "H\e_Ga=p,q=1,C=1,i=", p.picture.id, ",p=", n, ",c=", p.picture.cols,
-          ",r=", p.rows, ",y=", p.skip * cell, ",h=", p.rows * cell, "\e\\")
+          ",r=", p.rows, ",y=", y, ",h=", (p.skip + p.rows) * h ÷ rows - y, "\e\\")
 end
 
 hide_placement(io::IO, n::Int, p::Placement) = print(io, "\e_Ga=d,q=2,d=i,i=", p.picture.id, ",p=", n, "\e\\")

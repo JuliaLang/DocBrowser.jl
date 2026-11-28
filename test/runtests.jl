@@ -1200,6 +1200,10 @@ end
                 api_page = DocBrowser.lookup("DocsFixture/man/api")
                 @test startswith(api_page, "# DocsFixture/man/api\nPath: $(docs.pages[2].path)\n")
                 @test occursin("DocsFixture/man/api  manual of DocsFixture: API", DocBrowser.find_docs("api"))
+                # A `docs:` link takes the same addresses, and is what copying a link to the page gives.
+                api_target = DocBrowser.ManualTarget(docs.pages[2].path, "")
+                @test DocBrowser.place_target("docs: DocsFixture/man/api", cat) == api_target
+                @test DocBrowser.place_ref(cat, api_target, 0) == "DocsFixture/man/api"
             finally
                 DocBrowser.HEADLESS[] = nothing
             end
@@ -2069,7 +2073,8 @@ end
 @testset "pictures" begin
     # What a terminal says about its pictures and its cells.
     @test read_event(IOBuffer("\e_Gi=31;OK\e\\")) == DocBrowser.GraphicsEvent(31, true)
-    @test read_event(IOBuffer("\e_Gi=7,p=1;ENOENT:gone\e\\")) == DocBrowser.GraphicsEvent(7, false)
+    @test read_event(IOBuffer("\e_Gi=7,p=1;ENOENT:gone\e\\")) == DocBrowser.GraphicsEvent(7, false, true)
+    @test read_event(IOBuffer("\e_Gi=7;EINVAL:bad\e\\")) == DocBrowser.GraphicsEvent(7, false)
     @test read_event(IOBuffer("\e[6;15;7t")) == DocBrowser.CellSizeEvent(15, 7)
     # The logo is sized for the terminal's cells, clear at its corners and opaque inside a dot.
     logo = DocBrowser.logo_picture((15, 7))
@@ -2111,13 +2116,28 @@ end
     # Scrolled part of the way out, it shows the rows still in view.
     b.doc_scroll = 3
     DocBrowser.draw(b)
-    @test occursin("i=$(logo.id),p=1,c=9,r=2,y=60,h=60\e\\", written())
-    # Under a card it is not drawn.
+    out = written()
+    @test occursin("i=$(logo.id),p=1,c=9,r=2,y=60,h=60\e\\", out) && !occursin("a=d", out)
+    # Under a card it is not drawn, and its placement is taken away, except in VS Code.
     b.card = ([DocBrowser.styled("card", nothing)], nothing)
     b.hover_at = (2, 60)
-    frame(b)
-    @test [p.picture for p in b.placements] == [mark]
+    withenv(() -> DocBrowser.draw(b), "TERM_PROGRAM" => "vscode")
+    @test [p.picture for p in b.placements] == [mark] && !occursin("a=d", written())
     b.card = nothing
+    DocBrowser.draw(b)
+    b.card = ([DocBrowser.styled("card", nothing)], nothing)
+    withenv(() -> DocBrowser.draw(b), "TERM_PROGRAM" => nothing)
+    out = written()
+    @test occursin("a=d,q=2,d=i,i=$(logo.id),p=1", out) && !occursin("i=$(mark.id),p=1\e", out)
+    b.card = nothing
+    # A picture that the terminal lost is sent again, and placed once it is.
+    DocBrowser.draw(b)
+    written()
+    @test handle!(b, DocBrowser.GraphicsEvent(logo.id, false, true)) && b.awaited == [logo]
+    @test occursin("i=$(logo.id),s=", written()) && !occursin("● ●", start())
+    DocBrowser.draw(b)
+    @test occursin("a=p,q=1,C=1,i=$(logo.id),", written())
+    @test handle!(b, DocBrowser.GraphicsEvent(logo.id, true)) && logo in b.pictures
     # A picture that the terminal fails to draw gives way to the dots again.
     @test handle!(b, DocBrowser.GraphicsEvent(logo.id, false)) && occursin("● ●", start())
     # Coming back from an editor sends the pictures again, as some terminals throw them away.
@@ -2143,6 +2163,97 @@ end
     out = String(take!(t.out_stream.io))
     @test !occursin("●●●", out) && occursin("a=p,q=1,C=1,i=$(mark.id),", out)
     @test count(DocBrowser.GRAPHICS_QUERY, out) == 1
+    # A PNG image that is a paragraph of its own is drawn, once it is in view. The browser
+    # reads only the size at the start of the file, and the terminal reads the rest.
+    mktempdir() do dir
+        write(joinpath(dir, "plot.png"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x8c\0\0\0\x3c", zeros(UInt8, 20))
+        write(joinpath(dir, "photo.jpg"), zeros(UInt8, 30))
+        path = joinpath(dir, "page.md")
+        write(path, "# Pictures\n\n![A plot](plot.png)\n\n![A photo](photo.jpg)\n\nSee ![this](plot.png) too.\n")
+        b = DocBrowser.opening(fake_terminal(""; rows=30))
+        written()
+        handle!(b, DocBrowser.CellSizeEvent(15, 7))
+        handle!(b, DocBrowser.GraphicsEvent(DocBrowser.GRAPHICS_QUERY_ID, true))
+        handle!(b, DocBrowser.AnsweredEvent())
+        foreach(p -> handle!(b, DocBrowser.GraphicsEvent(p.id, true)), copy(b.awaited))
+        written()
+        key = DocBrowser.ManualTarget(path, "")
+        shown() = join(String.(DocBrowser.page(b, key, DocBrowser.doc_width(b)).lines), '\n')
+        @test occursin("A plot", shown()) && !occursin("(Image: A plot)", shown())
+        @test occursin("(Image: this)", shown())
+        # One on the line after its text ends that paragraph, and is drawn under the text.
+        late = joinpath(dir, "late.md")
+        write(late, "Shown below:\n![Late](plot.png)\n\n- ![Listed](plot.png)\n\nNot a mark: ￼9\n")
+        p = DocBrowser.page(b, DocBrowser.ManualTarget(late, ""), DocBrowser.doc_width(b))
+        img = p.images[1]
+        @test strip(String(p.lines[img.line - 1])) == "Shown below:" && img.file == joinpath(dir, "plot.png")
+        # One in a list has the bullet on its first row only, and the mark's character in
+        # the text is only text.
+        listed = p.images[2]
+        rows = String.(p.lines[listed.line:listed.line+listed.picture.rows-1])
+        @test occursin('•', rows[1]) && !any(r -> occursin('•', r), rows[2:end]) && occursin("Not a mark", join(String.(p.lines)))
+        pic = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images).picture
+        @test (pic.cols, pic.rows, pic.width, pic.height) == (20, 4, 140, 60)
+        DocBrowser.follow!(b, key)
+        frame(b)
+        @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written()) && pic in b.awaited
+        @test pic in [p.picture for p in b.placements]
+        # Clicking it opens its file in the system's app.
+        hits = filter(h -> h.action == (:image, joinpath(dir, "plot.png")), b.hits)
+        @test length(hits) == pic.rows && length(first(hits).cols) == pic.cols
+        @test DocBrowser.click!(b, first(hits), false) && last(OPENED) == joinpath(dir, "plot.png")
+        frame(b)
+        @test !occursin("\e_G", written()) # sent only once
+        # After an editor, it is sent again when it is next drawn.
+        @test handle!(b, DocBrowser.GraphicsEvent(pic.id, true))
+        DocBrowser.leave_screen(b)
+        DocBrowser.enter_screen(b)
+        written()
+        # The terminal takes the logos sent again, or the browser stops expecting pictures
+        # once loading DocBrowserImages below has taken longer than it waits for them.
+        foreach(p -> handle!(b, DocBrowser.GraphicsEvent(p.id, true)), copy(b.awaited))
+        frame(b)
+        @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written())
+        # So is one that the terminal lost.
+        @test handle!(b, DocBrowser.GraphicsEvent(pic.id, true))
+        @test handle!(b, DocBrowser.GraphicsEvent(pic.id, false, true)) && !(pic in b.pictures)
+        frame(b)
+        @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written())
+        # One the terminal cannot draw is shown as text from then on.
+        @test handle!(b, DocBrowser.GraphicsEvent(pic.id, false))
+        @test occursin("(Image: A plot)", shown()) && isempty(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images)
+        # Other formats need DocBrowserImages. Until it is loaded a box holds their place, and
+        # pointing at it says how to get it. It is loaded by itself where it is installed, and
+        # a page that it fails to load in shows the image as text.
+        holder = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).holders)
+        @test b.images === :absent && holder.format == "JPEG" && occursin(r"│( +)add DocBrowserImages to draw it\1│", shown())
+        frame(b)
+        holds = filter(h -> h.action == (:holder, "JPEG"), b.hits)
+        @test length(holds) == holder.rows == 6 && occursin("pkg> add DocBrowserImages", DocBrowser.describe(b, first(holds).action))
+        # It is precompiled first, quietly, with the browser still usable and closable.
+        b.images = :installed
+        b.live = true
+        DocBrowser.forget_picture_pages!(b)
+        @test occursin("loading DocBrowserImages…", shown()) && b.images === :loading
+        @test isempty(b.modal) && !DocBrowser.loading(b)
+        wait(b.images_task)
+        b.live = false
+        @test b.images === :failed && occursin("(JPEG image: A photo)\n", shown() * "\n")
+        # Once it is loaded, the image is drawn.
+        @eval DocBrowser.png_image(file::String) = (read(joinpath($dir, "plot.png")), 140, 60)
+        try
+            DocBrowser.forget_picture_pages!(b)
+            img = only(DocBrowser.page(b, key, DocBrowser.doc_width(b)).images)
+            @test img.file == joinpath(dir, "photo.jpg") && !occursin("JPEG image", shown())
+            frame(b)
+            @test occursin("\e_Ga=t,f=100,i=$(img.picture.id),m=0;", written())
+        finally
+            Base.delete_method(only(methods(DocBrowser.png_image)))
+            empty!(DocBrowser.READ_IMAGES)
+        end
+        # Where pictures are not drawn, every image is text.
+        @test occursin("(Image: A plot)", join(String.(DocBrowser.manual_page(b.cat, path, 80).lines), '\n'))
+    end
 end
 
 @testset "search engine" begin
