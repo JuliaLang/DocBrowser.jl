@@ -1981,6 +1981,10 @@ end
 
 ansi(s::AnnotatedString, color::Bool=true) = sprint(print, s; context = :color => color)
 
+# Each placement with its number, which counts the placements of its picture, so that a
+# picture keeps its number when another one leaves the screen.
+numbered(ps::Vector{Placement}) = [(count(q -> q.picture.id == p.picture.id, view(ps, 1:i-1)) + 1, p) for (i, p) in enumerate(ps)]
+
 # Writes to the terminal, whose type is not known. The call is left to run time, since a
 # package that adds a method of `write` for its own kind of `IO` would otherwise invalidate
 # everything that writes, from the handling of keys up.
@@ -2004,11 +2008,17 @@ function draw(b::Browser)
     end
     # A row is written by deleting its line, and what that does to a picture on it or below
     # it is up to the terminal, so the pictures are all put back after any row is written.
+    # A placement put back under its number moves, so only those that are gone are taken away.
+    # VS Code's terminal deletes the whole picture with a placement, and the text written over
+    # a placement already removes it there, so none are taken away.
     if b.placements != b.shown || written && !isempty(b.shown)
-        for (n, p) in enumerate(b.shown)
-            hide_placement(buf, n, p)
+        placed = numbered(b.placements)
+        if get(ENV, "TERM_PROGRAM", "") != "vscode"
+            for (n, p) in numbered(b.shown)
+                any(((m, q),) -> m == n && q.picture.id == p.picture.id, placed) || hide_placement(buf, n, p)
+            end
         end
-        for (n, p) in enumerate(b.placements)
+        for (n, p) in placed
             show_placement(buf, n, p)
         end
         b.shown = copy(b.placements)
@@ -3148,6 +3158,13 @@ function handle!(b::Browser, ev::GraphicsEvent)
         j = ev.ok ? nothing : findfirst(pic -> pic.id == ev.id, b.pictures)
         j === nothing && return false
         pic = popat!(b.pictures, j)
+        # VS Code's terminal throws a picture away when one of its placements is taken away,
+        # so a picture the terminal lost is sent again. One from a file is sent when next drawn.
+        if ev.lost
+            filter!(p -> p.picture.id != ev.id, b.shown)
+            pic.id in (logo_picture(b.cell).id, mark_picture(b.cell).id) && send_logos!(b, [pic])
+            return true
+        end
     end
     if ev.ok
         filter!(kv -> kv.first[1] !== :start, b.pages) # drawn with or without its picture

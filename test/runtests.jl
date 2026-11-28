@@ -2073,7 +2073,8 @@ end
 @testset "pictures" begin
     # What a terminal says about its pictures and its cells.
     @test read_event(IOBuffer("\e_Gi=31;OK\e\\")) == DocBrowser.GraphicsEvent(31, true)
-    @test read_event(IOBuffer("\e_Gi=7,p=1;ENOENT:gone\e\\")) == DocBrowser.GraphicsEvent(7, false)
+    @test read_event(IOBuffer("\e_Gi=7,p=1;ENOENT:gone\e\\")) == DocBrowser.GraphicsEvent(7, false, true)
+    @test read_event(IOBuffer("\e_Gi=7;EINVAL:bad\e\\")) == DocBrowser.GraphicsEvent(7, false)
     @test read_event(IOBuffer("\e[6;15;7t")) == DocBrowser.CellSizeEvent(15, 7)
     # The logo is sized for the terminal's cells, clear at its corners and opaque inside a dot.
     logo = DocBrowser.logo_picture((15, 7))
@@ -2115,13 +2116,28 @@ end
     # Scrolled part of the way out, it shows the rows still in view.
     b.doc_scroll = 3
     DocBrowser.draw(b)
-    @test occursin("i=$(logo.id),p=1,c=9,r=2,y=60,h=60\e\\", written())
-    # Under a card it is not drawn.
+    out = written()
+    @test occursin("i=$(logo.id),p=1,c=9,r=2,y=60,h=60\e\\", out) && !occursin("a=d", out)
+    # Under a card it is not drawn, and its placement is taken away, except in VS Code.
     b.card = ([DocBrowser.styled("card", nothing)], nothing)
     b.hover_at = (2, 60)
-    frame(b)
-    @test [p.picture for p in b.placements] == [mark]
+    withenv(() -> DocBrowser.draw(b), "TERM_PROGRAM" => "vscode")
+    @test [p.picture for p in b.placements] == [mark] && !occursin("a=d", written())
     b.card = nothing
+    DocBrowser.draw(b)
+    b.card = ([DocBrowser.styled("card", nothing)], nothing)
+    withenv(() -> DocBrowser.draw(b), "TERM_PROGRAM" => nothing)
+    out = written()
+    @test occursin("a=d,q=2,d=i,i=$(logo.id),p=1", out) && !occursin("i=$(mark.id),p=1\e", out)
+    b.card = nothing
+    # A picture that the terminal lost is sent again, and placed once it is.
+    DocBrowser.draw(b)
+    written()
+    @test handle!(b, DocBrowser.GraphicsEvent(logo.id, false, true)) && b.awaited == [logo]
+    @test occursin("i=$(logo.id),s=", written()) && !occursin("● ●", start())
+    DocBrowser.draw(b)
+    @test occursin("a=p,q=1,C=1,i=$(logo.id),", written())
+    @test handle!(b, DocBrowser.GraphicsEvent(logo.id, true)) && logo in b.pictures
     # A picture that the terminal fails to draw gives way to the dots again.
     @test handle!(b, DocBrowser.GraphicsEvent(logo.id, false)) && occursin("● ●", start())
     # Coming back from an editor sends the pictures again, as some terminals throw them away.
@@ -2196,6 +2212,11 @@ end
         # The terminal takes the logos sent again, or the browser stops expecting pictures
         # once loading DocBrowserImages below has taken longer than it waits for them.
         foreach(p -> handle!(b, DocBrowser.GraphicsEvent(p.id, true)), copy(b.awaited))
+        frame(b)
+        @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written())
+        # So is one that the terminal lost.
+        @test handle!(b, DocBrowser.GraphicsEvent(pic.id, true))
+        @test handle!(b, DocBrowser.GraphicsEvent(pic.id, false, true)) && !(pic in b.pictures)
         frame(b)
         @test occursin("\e_Ga=t,f=100,i=$(pic.id),m=0;", written())
         # One the terminal cannot draw is shown as text from then on.

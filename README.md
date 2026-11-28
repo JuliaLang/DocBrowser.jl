@@ -129,7 +129,8 @@ browser looked and why it found no more.
   logo and the images in manuals, in terminals that have the kitty graphics protocol. It
   draws them with text instead. PNG images are drawn as they are. SVG, JPEG, TIFF and some
   other formats need the DocBrowserImages package installed (`pkg> add DocBrowserImages`),
-  which the browser loads when a page has such an image.
+  which the browser loads when a page has such an image. VS Code's terminal draws pictures
+  only with `terminal.integrated.enableImages` on and GPU acceleration in use.
 - `GITHUB_TOKEN`: raises GitHub's limit on the requests that finding those manuals makes.
 
 ## For AI agents
